@@ -145,6 +145,7 @@ menu() {
     echo " 8) Update modules from repo"
     echo " 9) View logs"
     echo "10) Uninstall pieces"
+    echo "11) korvarix-llm frontend (Open WebUI panel: install/gate/nginx)"
     echo " 0) Exit"
     local r
     read -r -p "select: " r || exit 0
@@ -159,6 +160,7 @@ menu() {
       8) module_sync ;;
       9) kcv_run_module status logs ;;
       10) kcv_run_module uninstall ;;
+      11) kcv_run_module korvarix-llm ;;
       0) exit 0 ;;
       *) : ;;
     esac
@@ -167,6 +169,7 @@ menu() {
 
 # ---- entry -------------------------------------------------------------------
 
+# shellcheck disable=SC2124  # "$@" is passed through verbatim
 case "${1:-}" in
   "")     if kcv_tty; then menu; else die "non-interactive: pass a subcommand (health|backup|update|<module>)"; fi ;;
   update) module_sync ;;

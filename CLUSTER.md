@@ -97,6 +97,9 @@ install/
     └── health.sh  backup.sh  status.sh  uninstall.sh  wizard.sh
 ```
 
+(plus `korvarix-llm.sh` — the frontend deploy module; and the repo can host
+the `korvarix-llm/` deployable folder itself for menu 11 to clone).
+
 Push `korvarix-llm-ai/modules/*` there as-is. Until the first push, the
 station falls back to its local cache — pre-seed a node by copying
 `modules/` to `/var/lib/korvarix-cluster/modules/` manually.
@@ -124,7 +127,15 @@ download.
 
 ## Wiring into korvarix-llm (Open WebUI frontend)
 
-On the frontend box (`korvarix-llm/.env`), point at the master:
+Two paths:
+
+**Menu 11 (recommended)** — run the station on the frontend box and pick
+`11) korvarix-llm frontend`. It clones the korvarix-llm folder from
+`Korvarix/install` into `/opt/korvarix-llm`, auto-wires the model endpoint
+from the cluster config, then drives the box's own `install.sh`
+(`install` → `gate` → `nginx`) with `check` after each step.
+
+**Manual** — deploy `korvarix-llm/install.sh` yourself, then in its `.env`:
 
 ```
 OPENAI_API_BASE_URL=http://<MASTER_VPN_IP or public>:8080/v1
@@ -133,6 +144,8 @@ OPENAI_API_KEY=sk-none
 
 llama-server binds to 127.0.0.1 by default — put it behind the existing
 korvarix-llm nginx/gate pattern (reverse-proxy hop), don't expose the port.
+All frontend secrets (SSO keys, OWUI API key) stay in the frontend box's
+`korvarix-llm/.env` — the cluster never needs them.
 
 ## Model fit (what you can actually run)
 
