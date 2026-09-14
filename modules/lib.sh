@@ -139,6 +139,48 @@ fw_allow() {
   fi
 }
 
+# open a port ONLY from a source subnet (VPN-scoped service exposure).
+# ufw: `from <src> to any port <port> proto <proto>`; firewalld: rich rule.
+fw_allow_from() {
+  local src="$1" proto="$2" port="$3"
+  if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then
+    ufw allow from "$src" to any port "$port" proto "$proto" >/dev/null 2>&1 && ok "ufw: opened $port/$proto from $src only"
+  elif command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>&1; then
+    firewall-cmd --permanent --add-rich-rule="rule family=ipv4 source address=$src port port=$port protocol=$proto accept" >/dev/null 2>&1 \
+      && firewall-cmd --reload >/dev/null 2>&1 && ok "firewalld: opened $port/$proto from $src only"
+  else
+    warn "no active firewall detected - ensure $port/$proto is reachable from $src only"
+  fi
+}
+
+# WireGuard needs the kernel module + interface config tooling on every role.
+wg_base() {
+  kcv_virt_check
+  kcv_base_tools
+  dep_ensure "wg:wireguard-tools" "modprobe:kmod"
+  modprobe wireguard 2>/dev/null || true
+  # openvz/lxc hosts can lack the module - fail loudly (purchase checklist: KVM only)
+  if ! lsmod 2>/dev/null | grep -q '^wireguard' && [[ ! -e /sys/module/wireguard ]]; then
+    warn "wireguard kernel module not loaded - verify 'modprobe wireguard' works on this host (KVM required)"
+  fi
+}
+
+wg_ip_forward_on() {
+  dep_ensure "sysctl:procps"
+  sysctl -w net.ipv4.ip_forward=1 >/dev/null
+  grep -q '^net.ipv4.ip_forward=1' /etc/sysctl.conf 2>/dev/null || echo 'net.ipv4.ip_forward=1' >> /etc/sysctl.conf
+}
+
+# static VPN address for a node name; issues the next free 10.8.0.x
+wg_next_ip() {
+  local i used
+  for i in $(seq 10 250); do
+    used="$(state_get "vpn_ip_$i")"
+    [[ -z "$used" ]] && { echo "10.8.0.$i"; return 0; }
+  done
+  return 1
+}
+
 svc_write() {
   local name="$1" content="$2"
   printf '%s\n' "$content" > "/etc/systemd/system/${KCV_PREFIX}-${name}.service"

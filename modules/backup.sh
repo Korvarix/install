@@ -1,7 +1,23 @@
 #!/usr/bin/env bash
 # module: backup
-# Nightly off-cluster backup (restic) of irreplaceable data. Models excluded.
-# Menu + cron entrypoint: kcv_module_backup, subcommand: run|restore|cron.
+# Nightly off-cluster backup (restic) of irreplaceable data. Models excluded
+# (re-downloadable). Covers cluster nodes AND the frontend hub (Open WebUI
+# database + uploads + secrets). Menu + cron entrypoint: kcv_module_backup,
+# subcommand: run|restore|cron.
+
+# frontend hub roots: OWUI data lives in the docker volume
+# korvarix-llm-data (-> /var/lib/docker/volumes/.../webui.db + uploads),
+# plus the box's korvarix-llm config (.env, policy copy, nginx vhost).
+backup_hub_roots() {
+  local roots=""
+  if [[ -d /opt/korvarix-llm/korvarix-llm ]]; then
+    roots="$roots /opt/korvarix-llm/korvarix-llm/.env /etc/korvarix-llm"
+  fi
+  local vol
+  vol="$(docker volume inspect korvarix-llm-data --format '{{.Mountpoint}}' 2>/dev/null || true)"
+  [[ -n "$vol" && -d "$vol" ]] && roots="$roots $vol"
+  printf '%s' "$roots"
+}
 
 backup_run() {
   kcv_init
@@ -29,6 +45,17 @@ backup_run() {
     mkdir -p "$root"
     roots="$roots $root"
   done
+  # frontend hub (role: frontend): Open WebUI database + uploads + config
+  if [[ "$(state_get role)" == "frontend" ]]; then
+    local hub_roots
+    hub_roots="$(backup_hub_roots)"
+    if [[ -n "$hub_roots" ]]; then
+      roots="$roots $hub_roots"
+      log "backup: hub roots included (OWUI data volume + korvarix-llm config)"
+    else
+      warn "frontend role but no hub data found - OWUI not installed yet? (skipping hub roots)"
+    fi
+  fi
   [[ -n "$roots" ]] || roots="$KCV_ETC_DIR"
 
   log "backup: snapshotting$roots (excludes: models, gguf, llama.cpp build)"

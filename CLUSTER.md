@@ -1,58 +1,71 @@
 # korvarix-llm-ai — LLM cluster (command station + modules)
 
 AI base for `korvarix-llm` (Open WebUI panel): a pool of VPSes that grows
-**one node at a time**, never touching existing storage, wired into the
-Open WebUI frontend.
+**one RAM donor at a time**, wired into the Open WebUI frontend.
 
 ## The baseline (as decided)
 
 | Machine | Spec | Role |
 |---|---|---|
-| VPN box | 1c / 1GB | OpenVPN hub + CA + SSH jump. Tiny on purpose — it anchors cluster identity across node rebuilds/upgrades |
-| node1 (master) | 8c / 128GB / 1TB | llama-server + k3s server + first storage brick |
-| node2+ | 8c / 128GB / 1TB | k3s agent + rpc-server + +1 storage brick each. Added **one at a time** |
+| Interface box | 4c / 4GB / 25GB | **WireGuard hub** + SSH jump. Tiny on purpose — it anchors cluster identity across node rebuilds/upgrades. Single point of failure for cluster traffic (health cron watches it) |
+| Hub (frontend) | 4c / 8GB / 50GB | korvarix-llm: Open WebUI + SSO gate + nginx. Owns all chat data (OWUI docker volume) |
+| node1 (master) | 16c / 128GB / 2TB | llama-server + ollama + ALL models on **local disk** (`/data/models`) |
+| node2+ (donors) | 8c / 128GB / 25GB | rpc-server only — pure RAM donors. No storage duties, no models. Added **one at a time** |
 
-- **Storage:** GlusterFS **distributed** (RAID 0 semantics). Full raw pool, zero
-  parity tax, grows +1 brick per node **online, no wipe, ever**. Tradeoff: no
-  redundancy — models are re-downloadable; irreplaceable data (chat logs,
-  uploads, configs) is covered by the nightly restic backup.
-- **CPU/RAM:** k3s pools them (cluster capacity = sum of nodes; a single
-  process still caps at one node's RAM — except LLM inference, below).
-- **LLM RAM merge:** llama.cpp **RPC** splits one model's layers across nodes
-  proportionally to free RAM. Heterogeneous nodes are fine. Day one: master
-  solo (`RPC_PEERS=` empty) — ≤110GB models run at full local speed. As nodes
-  join, the merged ceiling grows ~30GB/node (2 nodes ≈ 220GB → Qwen3 235B q4
-  territory).
-- **Network:** OpenVPN is the **default transport** — k3s, gluster, RPC and
-  SSH all ride the tunnel (10.8.0.0/24, static per-node IPs via CCD). 1Gbps
-  is the baseline bandwidth tier: token generation doesn't need more; 5Gbps
-  only speeds up model loads into RPC and rebalances.
-- **Cores:** 8c/node is the value floor for 128GB nodes (token generation is
-  memory-bandwidth-bound, not core-bound; more cores only speed prefill).
+- **Storage:** none shared. Models live on the master's own disk — donors never
+  touch model files (llama.cpp RPC streams tensor layers to them at load time).
+  Models are re-downloadable; irreplaceable data (chat DB, uploads, configs)
+  is covered by the nightly restic backup (frontend role includes the OWUI
+  data volume).
+- **RAM:** merged for inference. llama.cpp **RPC** splits one model's layers
+  across nodes proportionally to free RAM. Day one: master solo (`RPC_PEERS=`
+  empty) — ≤110GB models run at full local speed. Each donor adds ~110GB:
+  2 boxes ≈ 220GB (Qwen3 235B q4), 3 boxes ≈ 330GB (405B q4 territory).
+- **Network:** WireGuard is the **only transport** — llama RPC, ollama,
+  policy push and SSH all ride the tunnel (10.8.0.0/24, static per-box IPs).
+  1Gbps is the baseline bandwidth tier: token generation doesn't need more.
+  5Gbps is a deferred, formulaic upgrade (see tiers below).
+- **Cores:** 16c on the master (prefill/time-to-first-token scales with cores —
+  the one spec donors can never add), 8c floor on donors (decode is
+  memory-bandwidth-bound, not core-bound).
 
 ## Why these choices (one-paragraph physics)
 
 Token generation ≈ memory bandwidth ÷ active model size — cores stop mattering
-past ~8. So RAM is the spec that sets the model ceiling, cores are bought
-lean, and bandwidth only matters when moving weights (loads, rebalances).
-The VPN box exists because VPS resizes change IPs; a $5 anchor box means a
-rebuild never breaks cluster identity or the CA.
+past ~8. Prefill, however, is compute-bound and scales with cores, and it is
+serialized layer-by-layer across RPC peers — so the master carries the big
+core count and donors stay lean. RAM is the spec that sets the model ceiling,
+and donors are the only growth axis (VPS specs are frozen at purchase).
+Bandwidth only matters when moving weights (model downloads, RPC pushes at
+load time) — hence 5Gbps as a deferred tier, not a baseline.
+
+## 5Gbps upgrade tiers (deferred on purpose; 1Gbps is free)
+
+| Tier | Boxes | ~Cost | Buys |
+|---|---|---|---|
+| 1 | master only | $352 | Faster ollama model *downloads* (public internet — works immediately) |
+| 2 | master + all donors + interface **together** | $352 × N | Fast model *switching*: RPC weight pushes transit the interface box, so its speed = min(all three). 70GB ≈ 10 min → ~2 min |
+
+Trigger: upgrade when big-model switch latency annoys you or daily pulls drag.
+NICs are the only spec upgradeable later without touching data — cores/RAM/SSD
+are frozen per box.
 
 ## Quickstart (the wizard drives everything)
 
 ```bash
-# 1. Buy the VPN mini-box + first two nodes (KVM! same region! see checklist)
+# 1. Buy the interface mini-box + master + donors (KVM! same region! checklist)
 # 2. Upload korvarix-cluster.sh to each machine, then per machine:
 
 ./korvarix-cluster.sh            # menu
 
-# On the VPN box:   1) wizard → VPN box
-#                   3) VPN management → issue a client for EVERY node
-# On node1 (master):1) wizard → First node (walks VPN join → storage → k3s
-#                      → llama build+serve → cron; prompts for the .ovpn)
-# On each new node: 1) wizard → Additional node (VPN join → pool join →
-#                   brick add + rebalance → k3s agent → rpc-server)
-#                   (needs the master's k3s token: master menu 2 shows it)
+# On the interface box:  1) wizard → Interface box
+#                        3) VPN management → issue a peer for EVERY box
+#                           (hub + node1 + each donor + frontend)
+# On node1 (master):     1) wizard → First node (walks VPN join → llama build
+#                           + rpc → set model + serve → cron)
+# On each donor:         1) wizard → Additional node (VPN join → rpc-server;
+#                           prints the add-peer command to run on the master)
+# On the frontend box:   1) wizard → Frontend box (VPN join → korvarix-llm)
 ```
 
 Non-interactive entrypoints (what cron and scripts call):
@@ -61,8 +74,8 @@ Non-interactive entrypoints (what cron and scripts call):
 ./korvarix-cluster.sh health     # health check (cron calls this)
 ./korvarix-cluster.sh backup     # nightly restic backup
 ./korvarix-cluster.sh update     # refresh modules from the repo (manual)
-./korvarix-cluster.sh gluster add-brick <host>   # grow the pool (on master)
-./korvarix-cluster.sh vpn issue <name>           # new client cert (on VPN box)
+./korvarix-cluster.sh llama add-peer <vpn-ip>    # register donor (on master)
+./korvarix-cluster.sh vpn issue <name>           # new peer config (interface)
 ./korvarix-cluster.sh llama start|stop|rpc-start|set-model <file>
 ```
 
@@ -77,7 +90,8 @@ touches the network; everything runs from cache at
 ```
 modules/manifest.txt   # name + version + sha256 per module (integrity gate)
 modules/lib.sh         # shared engine: deps, prompts, pkg_install, state, cron, fw
-modules/{vpn,gluster,k3s,llama,health,backup,status,uninstall,wizard}.sh
+modules/{vpn,llama,ollama,health,backup,status,uninstall,wizard}.sh
+modules/korvarix-llm.sh  # frontend deploy wrapper
 ```
 
 - Every download is sha256-verified against the manifest; mismatch = refused
@@ -93,7 +107,7 @@ install/
 ├── modules/                 # station modules (fetched + sha256-verified)
 │   ├── manifest.txt
 │   ├── lib.sh
-│   ├── vpn.sh  gluster.sh  k3s.sh  llama.sh
+│   ├── vpn.sh  llama.sh  ollama.sh
 │   └── health.sh  backup.sh  status.sh  uninstall.sh  wizard.sh  korvarix-llm.sh
 └── korvarix-llm/            # the deployable frontend folder (menu 11 clones it)
     ├── install.sh  install.ps1  Dockerfile.gate  package.json  README.md
@@ -109,91 +123,179 @@ OPEN_WEBUI_API_KEY) is blocked by the folder's `.gitignore` — keep it that way
 
 Push `korvarix-llm-ai/modules/*` and `korvarix-llm/*` (minus real .env) there.
 Until the first push, the station falls back to its local cache — pre-seed a
-node by copying `modules/` to `/var/lib/korvarix-cluster/modules/` manually.
+box by copying `modules/` to `/var/lib/korvarix-cluster/modules/` manually.
+
+## Public AI endpoint policy (menu 5: Ollama)
+
+The public-facing API (clients pulling from `llm.korvarix.com`) is governed by
+a policy file the station builds from `.env` knobs and pushes to the frontend
+gate (`korvarix-policy.json`, checksum-verified, re-read by the gate every 60s).
+Four kinds of parameters, all defaults chosen for a legal public posture:
+
+| Kind | Knobs | Behavior |
+|---|---|---|
+| **Smart request parameters** | `POLICY_MAX_OUT`, `POLICY_TEMP_MAX`, `POLICY_TOPP_MAX`, `POLICY_MAX_CTX`, `POLICY_MAX_PROMPT_CHARS` | Client-supplied sampling params are **clamped down** (never trusted): output token cap, temperature/top-p ceilings, context + prompt-size limits |
+| **No-attacking parameters** | `POLICY_RPM_IP`, `POLICY_RPM_KEY`, `POLICY_INFLIGHT_IP`, `POLICY_KEYS_PER_IP_DAY` | Per-IP + per-key rate limits, concurrency caps (streams can't stack into a DoS), key-mint budget per IP/day (slows key farming) |
+| **Internet lookup** | `POLICY_WEB_LOOKUP` | `false` = the gate strips tool/web-search fields from every request (model can't fetch third-party content = no legal exposure). `true` = passed through |
+| **Kind parameters** | `POLICY_SAFETY_FILTER`, `POLICY_LOCK_SYSTEM_PROMPT` | Safety filter refuses CSAM/weapons/violent-extremism solicitations **before any model sees them** (legal floor for a public service); system-prompt lock drops client system messages so the persona stays yours |
+
+**Model allowlist:** `MODELS_ALLOWLIST` is the ONLY list clients may call.
+Everything else gets `403 model_not_allowed` at the gate — clients can call
+any model *on the list*, nothing else, and there's no way to add models via
+the API (the daily job also prunes non-allowlisted strays).
+
+**Sandboxing:** ollama runs as a dedicated unprivileged user under systemd
+hardening (`NoNewPrivileges`, `ProtectSystem=strict`, `PrivateTmp`, kernel
+protections) with a hard capacity budget (`OLLAMA_NUM_PARALLEL`,
+`OLLAMA_MAX_LOADED`, `OLLAMA_KEEP_ALIVE`). Models live in the sandbox user's
+own directory; the daemon cannot write outside its paths.
+
+**Daily patches:** menu 5 → install daily cron runs at 05:23 — re-pulls every
+allowlisted model (quant/patch updates land automatically) and prunes anything
+not on the list. Manual anytime: `korvarix-cluster.sh ollama daily` (log:
+`/var/log/korvarix/ollama-pull.log`).
+
+**Model catalog (menu 5 → 4 "add models (picker)"):** two sections —
+- **OFFICIAL** (`ollama.com/library`): vendor-maintained models (Meta, Qwen,
+  Google, Microsoft, Mistral, IBM, NVIDIA, DeepSeek, OpenAI's gpt-oss...) —
+  only CPU-runnable sizes are listed; `cloud`-tagged builds are excluded
+  (they execute on Ollama's servers, not our nodes)
+- **COMMUNITY** (`ollama.com/<publisher>/<model>`): fine-tunes/abliterations
+  for roleplay, storytelling, and uncensored variants — incl. your
+  `oroboros-labs/claude-fable5*` and `claude-sonnet-7-undecillion` picks.
+  Community pull sizes are approximate — watch the pull output.
+
+Pick by numbers (`1 8 42`), `all`, `official`, or `community`; the picker
+merges into `MODELS_ALLOWLIST`, pulls, and offers to rebuild+push the policy.
+Catalog edits: one line per model in `OLLAMA_CATALOG` (top of
+`modules/ollama.sh`, format `slug|Label|~N GB RAM|description|O-or-C`).
+
+**Setup flow (master):**
+```bash
+./korvarix-cluster.sh                # menu
+# 5) Ollama:
+#   1 install → 2 serve → edit .env MODELS_ALLOWLIST → 3 pull
+#   5 build policy → 6 push policy to frontend → 7 install daily cron
+```
+
+**One location, many models:** clients always hit the single public endpoint
+(`llm.korvarix.com`). The frontend's Open WebUI **merges** every connected
+backend into one model list, so adding capacity or models is invisible to
+clients — no client config changes ever:
+
+1. Set `MODELS_ALLOWLIST="model1 model2 model3"` in the station `.env`
+   (space-separated ollama names, e.g. `qwen2.5:7b llama3.1:8b mistral-nemo`)
+2. Menu 5: `3` pull (downloads all of them)
+3. Set `OLLAMA_BIND=<NODE_VPN_IP>` (e.g. `10.8.0.11`) so the daemon is
+   reachable over the VPN — never a public IP
+4. The frontend wizard auto-wires the frontend's `korvarix-llm/.env`:
+   `OLLAMA_BASE_URL=http://<MASTER_VPN_IP>:11434` — or re-run
+   `./install.sh` after setting it manually
+5. Menu 5: `5` build policy → `6` push (the gate now guards all of them)
+
+More models later = add to `MODELS_ALLOWLIST` → `3` pull → `5`+`6`. More
+capacity later = buy a donor, run its wizard, then on the master:
+`llama add-peer <its-vpn-ip>` (one command; RAM merges, models don't move).
+
+**Legal notes for a public endpoint:** the combination above (allowlist-only
+models, clamped params, rate limits, pre-model refusal of illegal-content
+solicitations, entitlement-checked keys) is the standard reasonable-care
+posture. It does not make you immune — keep the ToS updated to cover AI
+output, log refusals (they're evidence of enforcement), and review the
+blocklist if your jurisdiction requires more.
 
 ## Dependency self-check (every step)
 
-Each module step verifies its own binaries first (e.g. gluster step →
-`glusterd`; RPC step → `cmake`/`git`/`g++`), prompts before installing missing
-ones via the distro-agnostic installer (apt/dnf/yum/zypper/pacman/apk),
-re-verifies after install, and fails loudly with manual instructions if still
-missing — nothing half-done, re-runs are safe (idempotent). Network sources
-(get.k3s.io, github.com, package repos) are reachability-gated before any
-download.
+Each module step verifies its own binaries first (e.g. llama build →
+`cmake`/`git`/`g++`), prompts before installing missing ones via the
+distro-agnostic installer (apt/dnf/yum/zypper/pacman/apk), re-verifies after
+install, and fails loudly with manual instructions if still missing — nothing
+half-done, re-runs are safe (idempotent). Network sources (github.com,
+ollama.com, package repos) are reachability-gated before any download.
 
 ## Daily driving
 
 | Task | Where |
 |---|---|
-| Add a node (storage + compute) | wizard on the new box → "Additional node" |
-| Bigger merged model after adding nodes | master `.env`: append `10.8.0.x:50052` to `RPC_PEERS`, restart llama-server |
+| Add a RAM donor | wizard on the new box → "Additional node", then on master: `llama add-peer <vpn-ip>` |
+| Bigger merged model after adding donors | master `.env` RPC_PEERS grows automatically via add-peer; restart llama-server |
 | Serve a different model | master menu 4 → set model → start |
 | Check cluster health | any box: menu 2 (or `health` for cron-view) |
-| View logs | menu 9 (llama/rpc/vpn/k3s/health/backup) |
+| Peer status (merged-RAM donors) | master menu 4 → 8 (or `llama peers`) |
+| View logs | menu 9 (llama/rpc/wireguard/ollama/health/backup) |
 | Restore data | menu 6 → restore (snapshots listed) |
 
 ## Wiring into korvarix-llm (Open WebUI frontend)
 
-Two paths:
-
-**Menu 11 (recommended)** — run the station on the frontend box and pick
-`11) korvarix-llm frontend`. It clones the korvarix-llm folder from
-`Korvarix/install` into `/opt/korvarix-llm`, auto-wires the model endpoint
-from the cluster config, then drives the box's own `install.sh`
-(`install` → `gate` → `nginx`) with `check` after each step.
+**Menu 11 / wizard role 4 (recommended)** — run the station on the frontend
+box and pick `4) Frontend box`. It joins the VPN, clones the korvarix-llm
+folder from `Korvarix/install` into `/opt/korvarix-llm`, auto-wires both
+model endpoints from the cluster config, then drives the box's own
+`install.sh` (`install` → `gate` → `nginx`) with `check` after each step.
 
 **Manual** — deploy `korvarix-llm/install.sh` yourself, then in its `.env`:
 
 ```
-OPENAI_API_BASE_URL=http://<MASTER_VPN_IP or public>:8080/v1
+OPENAI_API_BASE_URL=http://<MASTER_VPN_IP>:8080/v1
 OPENAI_API_KEY=sk-none
+OLLAMA_BASE_URL=http://<MASTER_VPN_IP>:11434
 ```
 
-llama-server binds to 127.0.0.1 by default — put it behind the existing
-korvarix-llm nginx/gate pattern (reverse-proxy hop), don't expose the port.
-All frontend secrets (SSO keys, OWUI API key) stay in the frontend box's
-`korvarix-llm/.env` — the cluster never needs them.
+llama-server binds to the master's VPN IP (`LLAMA_BIND`) — reachable only over
+the tunnel, never a public IP. All frontend secrets (SSO keys, OWUI API key)
+stay in the frontend box's `korvarix-llm/.env` — the cluster never needs them.
 
 ## Model fit (what you can actually run)
 
-| Class | RAM need | 1× 128GB master | +nodes merged |
+| Class | RAM need | 1× 128GB master | +donors merged |
 |---|---|---|---|
 | 8–14B (Qwen3, Llama 3.1 8B) | 5–16GB | fast, no RPC | — |
 | 32B dense (Qwen3 32B q4) | ~20GB | good | — |
 | 70B q4 / q8 | 43–80GB | good (~8–15 tok/s local) | fine |
-| **Qwen3 235B-A22B q4 (MoE)** | ~133GB | ❌ | ✅ 2+ nodes (~2–6 tok/s) |
-| 405B / DeepSeek 671B | 230GB+ | ❌ | keep adding nodes |
+| **Qwen3 235B-A22B q4 (MoE)** | ~133GB | ❌ | ✅ 2 boxes ~2–6 tok/s; 3 boxes ~3–8 |
+| Llama 3.1 405B q4 | ~231GB | ❌ | ✅ 3 boxes (~330GB) |
+| DeepSeek 671B q4 | ~404GB | ❌ | needs a 4th donor |
 
 MoE models are the CPU-cluster sweet spot (only active params compute).
+Each donor adds ~110GB merged RAM. Decode speed scales with donors (memory
+bandwidth pools); prefill does not (compute-bound, serialized per layer —
+that's why the master carries 16c).
 
-## Purchase checklist (before buying a node)
+## Purchase checklist (before buying a box)
 
-1. `systemd-detect-virt` → must be `kvm`/`qemu` (OpenVZ/LXC = walk away)
-2. Same provider + region as the rest; `ping` other nodes < 5ms
-3. 1Gbps baseline bandwidth is fine (5Gbps = load-time QoL only)
-4. 8c/128GB is the sweet spot; RAM > cores always for LLM inference
-5. Disk size is the "decide once" spec (bricks should stay equal-size; the
-   +1-node growth path keeps them equal forever)
+1. `systemd-detect-virt` → must be `kvm`/`qemu` (OpenVZ/LXC = walk away —
+   WireGuard and the plain-systemd services need a real kernel)
+2. Same provider + region as the rest; `ping` other boxes < 5ms
+3. 1Gbps baseline bandwidth is fine (5Gbps = deferred tier, see table above)
+4. Master: 16c/128GB + storage for the whole model library (2TB here);
+   donors: 8c/128GB + minimum storage (25GB — they hold no models)
+5. RAM ceiling per box is 128GB → donors are the ONLY growth path for the
+   merged model ceiling. Cores: 16c master is a buy-now item (donors can
+   never add prefill speed to the pool)
 
 ## Triage
 
 | Symptom | Cause |
 |---|---|
-| wizard fails at VPN join | wrong .ovpn, or VPN box's udp/1194 closed |
-| gluster probe fails | VPN down between nodes (ping 10.8.0.x first) |
-| k3s agent NotReady | flannel iface wrong (should be tun0) or token stale |
+| wizard fails at VPN join | wrong peer .conf, or interface box's udp/51820 closed |
+| master unreachable from donor | WG handshake down — `wg show` on both, check endpoint |
 | rpc-server down | llama.cpp ref mismatch between nodes — rebuild all with same `LLAMA_CPP_REF` |
-| model loads but 1/3 the layers | a peer's rpc-server is down — check health on each node |
+| model loads but 1/3 the layers | a peer's rpc-server is down — master menu 4 → 8 (or `llama peers`) |
 | tokens very slow with RPC | cross-region latency or a node on different CPU flags |
-| disk alerts but pool has space | check brick-local disk vs pool: `df -h /data/brick $GLUSTER_MOUNT` |
+| frontend can't reach llama-server | LLAMA_BIND not set to master's VPN IP, or WG down |
+| policy push fails | FRONTEND_VPN_IP not set (or frontend not joined to the VPN) |
+| disk alerts but models dir is small | ollama pull churn — check `ollama list` + prune via menu 5 |
 
 ## What lives where
 
 ```
 /etc/korvarix-cluster/korvarix.env   # config (wizard writes it)
-/var/lib/korvarix-cluster/state      # runtime state (tokens, VPN IPs, role)
+/var/lib/korvarix-cluster/state      # runtime state (WG IPs, peers, role)
 /var/lib/korvarix-cluster/modules/   # cached modules (sha256-verified)
-/var/lib/korvarix-cluster/pki/       # VPN CA (VPN box only)
+/var/lib/korvarix-cluster/wireguard/ # peer configs + private keys (interface box)
+/etc/wireguard/korvarix-hub.conf     # WG hub config (interface box)
+/etc/wireguard/korvarix.conf         # WG peer config (every other box)
+/data/models                         # master-local model library
 /var/log/korvarix/                   # health/backup logs
-/etc/cron.d/korvarix-*               # health 5min, backup nightly
+/etc/cron.d/korvarix-*               # health 5min, backup nightly, ollama daily
 ```

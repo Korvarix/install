@@ -46,6 +46,15 @@ klm_wire_cluster() {
     sed -i "s|^OPENAI_API_BASE_URL=.*|OPENAI_API_BASE_URL=$master|" "$env_file"
     log "wired cluster endpoint: $master"
   fi
+  # ollama backend (allowlist models) when the master serves one
+  local ollama="${KLM_OLLAMA_ENDPOINT:-}"
+  if [[ -z "$ollama" && -n "${MASTER_VPN_IP:-}" ]]; then
+    ollama="http://$MASTER_VPN_IP:${OLLAMA_PORT:-11434}"
+  fi
+  if [[ -n "$ollama" ]] && ! grep -q '^OLLAMA_BASE_URL=.\+' "$env_file"; then
+    sed -i "s|^OLLAMA_BASE_URL=.*|OLLAMA_BASE_URL=$ollama|" "$env_file"
+    log "wired ollama endpoint: $ollama"
+  fi
 }
 
 klm_install() {

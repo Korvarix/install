@@ -97,11 +97,10 @@ WantedBy=multi-user.target"
   sleep 2
   systemctl is-active --quiet korvarix-ollama || die "ollama failed to start - journalctl -u korvarix-ollama"
   state_set ollama_port "${OLLAMA_PORT:-11434}"
-  # bind != loopback: the port must be reachable - open it ONLY in the
-  # firewall (the VPN network is the reachability boundary; never 0.0.0.0
-  # on a public interface for a model-serving daemon)
+  # bind != loopback: the port must be reachable - open it ONLY from the VPN
+  # subnet (the VPN is the reachability boundary; never a public interface)
   if [[ "${OLLAMA_BIND:-127.0.0.1}" != "127.0.0.1" ]]; then
-    fw_allow tcp "${OLLAMA_PORT:-11434}"
+    fw_allow_from "${VPN_NET:-10.8.0.0}/24" tcp "${OLLAMA_PORT:-11434}"
     warn "ollama: reachable on ${OLLAMA_BIND}:${OLLAMA_PORT:-11434} - keep OLLAMA_BIND at the VPN IP, never a public IP"
   fi
   ok "ollama: serving on ${OLLAMA_BIND:-127.0.0.1}:${OLLAMA_PORT:-11434} (user $owner, hardened)"
@@ -371,17 +370,24 @@ EOF
   sum="$(sha256sum "$out" | awk '{print $1}')"
   printf '%s\n' "$sum" > "${out}.sha256"
   ok "policy built: $out (sha256 ${sum:0:12}...)"
-  ok "policy knobs: rpm/ip=${POLICY_RPM_IP:-10} rpm/key=${POLICY_RPM_KEY:-30} in-flight=${POLICY_INFLIGHT_IN:-2} ctx<=${POLICY_MAX_CTX:-8192} out<=${POLICY_MAX_OUT:-2048} web_lookup=${POLICY_WEB_LOOKUP:-false} safety=${POLICY_SAFETY_FILTER:-true}"
+  ok "policy knobs: rpm/ip=${POLICY_RPM_IP:-10} rpm/key=${POLICY_RPM_KEY:-30} in-flight=${POLICY_INFLIGHT_IP:-2} ctx<=${POLICY_MAX_CTX:-8192} out<=${POLICY_MAX_OUT:-2048} web_lookup=${POLICY_WEB_LOOKUP:-false} safety=${POLICY_SAFETY_FILTER:-true}"
 }
 
 # push policy + serving endpoint to the frontend gate (rsync over ssh). The
 # gate never trusts its own copy beyond the checksum.
+# FRONTEND_VPN_IP is the frontend box's VPN IP (set by the frontend wizard) -
+# it must NOT default to the master: the master pushing to itself would
+# strand the policy where the gate can never read it.
 ollama_policy_push() {
   require_root
   kcv_require_env
-  local host="${POLICY_PUSH_HOST:-$MASTER_VPN_IP}"
-  [[ -n "$host" ]] || die "POLICY_PUSH_HOST / MASTER_VPN_IP empty (the frontend box's VPN IP)"
+  local host="${FRONTEND_VPN_IP:-${POLICY_PUSH_HOST:-}}"
+  [[ -n "$host" ]] || die "FRONTEND_VPN_IP / POLICY_PUSH_HOST empty in $KCV_ENV_FILE (the frontend box's VPN IP)"
   command -v rsync >/dev/null 2>&1 || pkg_install rsync
+  if [[ "$host" == "${MASTER_VPN_IP:-}" ]]; then
+    warn "target == MASTER_VPN_IP - the policy belongs on the FRONTEND box; did you mean FRONTEND_VPN_IP?"
+    kcv_confirm "push to $host anyway?" || return 1
+  fi
   log "policy: pushing to $host"
   ssh_remote "$host" "mkdir -p /etc/korvarix-llm" || die "ssh to frontend failed"
   rsync -a --chmod=F640 "${KCV_LIB_DIR}/korvarix-policy.json" "root@${host}:/etc/korvarix-llm/korvarix-policy.json" || die "rsync policy failed"

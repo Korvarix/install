@@ -32,59 +32,62 @@ h_alert() {
 }
 
 check_port() { curl -fsS --max-time 5 -o /dev/null "$1" 2>/dev/null; }
+check_tcp() { timeout 5 bash -c "</dev/tcp/$1/$2" 2>/dev/null; }
+
+# ping every RPC peer (merged-RAM donors) - a down peer silently drops its
+# layers, so this catches the "model loads at 1/N capacity" class proactively
+health_rpc_peers() {
+  local entries entry ip pt
+  [[ -n "${RPC_PEERS:-}" ]] || return 0
+  IFS=',' read -ra entries <<<"$RPC_PEERS"
+  for entry in "${entries[@]}"; do
+    ip="${entry%%:*}"; pt="${entry##*:}"
+    if check_tcp "$ip" "$pt"; then
+      h_alert "rpc_peer_$ip" ok
+    else
+      h_alert "rpc_peer_$ip" fail "peer $entry not answering (layers lost - rpc-server down on that node?)"
+      failures=$((failures+1))
+    fi
+  done
+}
 
 health_run() {
   kcv_init
   mkdir -p "$(dirname "$HEALTH_STATE")"
   local failures=0
 
-  # ---- vpn ----
-  if systemctl is-active --quiet "openvpn-client@korvarix" 2>/dev/null; then
-    if ip -4 addr show tun0 2>/dev/null | grep -q '10\.8\.0\.'; then
+  # ---- vpn (wireguard) ----
+  if systemctl is-active --quiet "wg-quick@${KCV_PREFIX}" 2>/dev/null; then
+    if ip -4 addr show wg0 2>/dev/null | grep -q '10\.8\.0\.'; then
       h_alert vpn ok "tunnel up"
     else
-      h_alert vpn fail "openvpn active but tun0 has no 10.8.0.x"
+      h_alert vpn fail "wg-quick active but wg0 has no 10.8.0.x"
       failures=$((failures+1))
     fi
-  elif systemctl is-active --quiet korvarix-vpn-server 2>/dev/null; then
-    h_alert vpn ok "hub running"
+  elif systemctl is-active --quiet "${KCV_PREFIX}-wg-hub" 2>/dev/null; then
+    # hub role: also verify the interface actually exists
+    if ip link show wg0 >/dev/null 2>&1; then
+      h_alert vpn ok "hub running"
+    else
+      h_alert vpn fail "hub service up but wg0 missing"
+      failures=$((failures+1))
+    fi
   elif [[ "$(state_get vpn_expected)" == "1" ]]; then
-    h_alert vpn fail "no openvpn service active"
+    h_alert vpn fail "no wireguard service active"
     failures=$((failures+1))
   fi
 
-  # ---- gluster ----
-  if command -v gluster >/dev/null 2>&1 && gluster volume info "${GLUSTER_VOLUME:-gv0}" >/dev/null 2>&1; then
-    local total online
-    total="$(gluster volume status "${GLUSTER_VOLUME:-gv0}" 2>/dev/null | grep -c ' Y ' || echo 0)"
-    online="$(gluster volume status "${GLUSTER_VOLUME:-gv0}" 2>/dev/null | awk '/ Y /{n++} END{print n+0}')"
-    if [[ "$online" -lt "$total" ]]; then
-      h_alert gluster fail "bricks degraded: $online/$total online"
-      failures=$((failures+1))
+  # ---- master reachability (donor + frontend roles) ----
+  if [[ -n "${MASTER_VPN_IP:-}" ]]; then
+    if ping -c1 -W5 "$MASTER_VPN_IP" >/dev/null 2>&1; then
+      h_alert master ok
     else
-      h_alert gluster ok "bricks: $online/$total"
-    fi
-    if mountpoint -q "${GLUSTER_MOUNT:-/mnt/gv0}"; then
-      h_alert gluster-mount ok
-    else
-      h_alert gluster-mount fail "${GLUSTER_MOUNT:-/mnt/gv0} not mounted"
+      h_alert master fail "master $MASTER_VPN_IP unreachable (tunnel up but master down?)"
       failures=$((failures+1))
     fi
   fi
 
-  # ---- k3s ----
-  if command -v k3s >/dev/null 2>&1; then
-    local notready
-    notready="$(k3s kubectl get nodes --no-headers 2>/dev/null | grep -cv ',Ready' || echo 0)"
-    if [[ "$notready" -gt 0 ]]; then
-      h_alert k3s fail "$notready node(s) not Ready"
-      failures=$((failures+1))
-    else
-      h_alert k3s ok
-    fi
-  fi
-
-  # ---- llama / rpc ----
+  # ---- llama / rpc / peers ----
   if systemctl list-unit-files 2>/dev/null | grep -q korvarix-llama-server; then
     if systemctl is-active --quiet korvarix-llama-server; then
       if check_port "http://127.0.0.1:${LLAMA_PORT:-8080}/health"; then
@@ -93,6 +96,7 @@ health_run() {
         h_alert llama fail "service up but port ${LLAMA_PORT:-8080} not answering"
         failures=$((failures+1))
       fi
+      health_rpc_peers
     else
       h_alert llama fail "service down"
       failures=$((failures+1))
@@ -107,9 +111,19 @@ health_run() {
     fi
   fi
 
+  # ---- ollama (when installed) ----
+  if systemctl list-unit-files 2>/dev/null | grep -q korvarix-ollama; then
+    if systemctl is-active --quiet korvarix-ollama; then
+      h_alert ollama ok
+    else
+      h_alert ollama fail "ollama service down"
+      failures=$((failures+1))
+    fi
+  fi
+
   # ---- disk / mem ----
   local diskpct mempct
-  diskpct="$(df -P "${GLUSTER_MOUNT:-/}" 2>/dev/null | awk 'NR==2{gsub("%","",$5); print $5}')"
+  diskpct="$(df -P "${MODELS_DIR:-/}" 2>/dev/null | awk 'NR==2{gsub("%","",$5); print $5}')"
   [[ -n "$diskpct" ]] || diskpct="$(df -P / | awk 'NR==2{gsub("%","",$5); print $5}')"
   mempct="$(free | awk '/Mem:/{printf "%d", $3/$2*100}')"
   if [[ "${diskpct:-0}" -ge "${DISK_ALERT_PCT:-85}" ]]; then

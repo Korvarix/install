@@ -11,7 +11,7 @@
 
 set -uo pipefail
 
-KCV_VERSION="0.1.0"
+KCV_VERSION="0.2.0"
 KCV_REPO_URL="${KCV_REPO_URL:-https://raw.githubusercontent.com/Korvarix/install/main/modules}"
 # shellcheck disable=SC2034  # reserved for pinned-release mode
 KCV_REF="${KCV_REF:-main}"
@@ -135,18 +135,17 @@ menu() {
     echo
     printf '\033[1;35m== korvarix cluster v%s ==\033[0m\n' "$KCV_VERSION"
     echo " host: $(hostname)   config: ${KCV_ENV_FILE}"
-    echo " 1) Set up this machine (wizard: VPN box / first node / additional node)"
+    echo " 1) Set up this machine (wizard: interface box / first node / donor / frontend)"
     echo " 2) Status & health check"
-    echo " 3) VPN management (issue client / list / join)"
-    echo " 4) Models & inference (build, start/stop llama-server & rpc-server)"
-    echo " 5) Storage (add brick, rebalance status)"
+    echo " 3) VPN management (WireGuard: issue peer / list / revoke / join)"
+    echo " 4) Models & inference (build, llama-server & rpc-server, add peer)"
+    echo " 5) Ollama (sandboxed serve, allowlist, daily patches, policy)"
     echo " 6) Backup now / restore"
-    echo " 7) Cron jobs (health 5min, backup nightly)"
+    echo " 7) Cron jobs (health 5min, backup nightly, ollama daily)"
     echo " 8) Update modules from repo"
     echo " 9) View logs"
     echo "10) Uninstall pieces"
     echo "11) korvarix-llm frontend (Open WebUI panel: install/gate/nginx)"
-    echo "12) Models & Ollama (sandboxed serve, allowlist, daily patches, policy)"
     echo " 0) Exit"
     local r
     read -r -p "select: " r || exit 0
@@ -155,14 +154,13 @@ menu() {
       2) kcv_run_module status ;;
       3) kcv_run_module vpn ;;
       4) kcv_run_module llama ;;
-      5) kcv_run_module gluster ;;
+      5) kcv_run_module ollama ;;
       6) kcv_run_module backup ;;
-      7) kcv_run_module cron ;;
+      7) kcv_run_module status cron ;;
       8) module_sync ;;
       9) kcv_run_module status logs ;;
       10) kcv_run_module uninstall ;;
       11) kcv_run_module korvarix-llm ;;
-      12) kcv_run_module ollama ;;
       0) exit 0 ;;
       *) : ;;
     esac

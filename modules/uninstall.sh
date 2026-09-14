@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # module: uninstall
-# Removes korvarix pieces. Bricks are NEVER wiped automatically -
-# only via explicit wipe-bricks. Menu entrypoint: kcv_module_uninstall.
+# Removes korvarix pieces. Model data is NEVER wiped automatically -
+# only via explicit wipe-models. Menu entrypoint: kcv_module_uninstall.
 
 uninstall_run() {
   kcv_init
@@ -14,37 +14,37 @@ uninstall_run() {
     rm -f /etc/systemd/system/korvarix-llama-server.service /etc/systemd/system/korvarix-rpc-server.service
   fi
 
-  if [[ "$scope" == "all" || "$scope" == "k3s" ]]; then
-    /usr/local/bin/k3s-killall.sh 2>/dev/null || true
-    /usr/local/bin/k3s-uninstall.sh 2>/dev/null || /usr/local/bin/k3s-agent-uninstall.sh 2>/dev/null || true
+  if [[ "$scope" == "all" || "$scope" == "ollama" ]]; then
+    systemctl stop korvarix-ollama 2>/dev/null || true
+    systemctl disable korvarix-ollama 2>/dev/null || true
+    rm -f /etc/systemd/system/korvarix-ollama.service
+    cron_remove ollama-patch
   fi
 
   if [[ "$scope" == "all" || "$scope" == "vpn" ]]; then
-    systemctl stop korvarix-vpn-server 2>/dev/null || true
-    systemctl disable korvarix-vpn-server 2>/dev/null || true
-    systemctl stop "openvpn-client@korvarix" 2>/dev/null || true
-    systemctl disable "openvpn-client@korvarix" 2>/dev/null || true
-    rm -f /etc/systemd/system/korvarix-vpn-server.service
+    systemctl stop korvarix-wg-hub 2>/dev/null || true
+    systemctl disable korvarix-wg-hub 2>/dev/null || true
+    systemctl stop "wg-quick@korvarix" 2>/dev/null || true
+    systemctl disable "wg-quick@korvarix" 2>/dev/null || true
+    rm -f /etc/systemd/system/korvarix-wg-hub.service /etc/wireguard/korvarix*.conf
+    ip link del wg0 2>/dev/null || true
   fi
 
   if [[ "$scope" == "all" || "$scope" == "cron" ]]; then
     cron_remove health
     cron_remove backup
+    cron_remove ollama-patch
   fi
 
   systemctl daemon-reload
-  ok "uninstall: done (gluster + brick data preserved)"
+  ok "uninstall: done (models + wireguard keys preserved)"
 
-  if [[ "$scope" == "wipe-bricks" ]]; then
-    kcv_confirm "REALLY wipe ${GLUSTER_BRICK:-/data/brick} and delete volume ${GLUSTER_VOLUME:-gv0}? UNRECOVERABLE." || { warn "wipe aborted"; return 0; }
-    umount "${GLUSTER_MOUNT:-/mnt/gv0}" 2>/dev/null || true
-    gluster volume stop "${GLUSTER_VOLUME:-gv0}" 2>/dev/null || true
-    gluster volume delete "${GLUSTER_VOLUME:-gv0}" 2>/dev/null || true
-    rm -rf "${GLUSTER_BRICK:?}"
-    ok "brick wiped"
+  if [[ "$scope" == "wipe-models" ]]; then
+    kcv_confirm "REALLY wipe ${MODELS_DIR:-/data/models}? UNRECOVERABLE (models are re-downloadable but large)." || { warn "wipe aborted"; return 0; }
+    rm -rf "${MODELS_DIR:?}"
+    ok "models wiped"
   else
-    warn "brick ${GLUSTER_BRICK:-/data/brick} preserved - manual wipe:"
-    warn "  umount ${GLUSTER_MOUNT:-/mnt/gv0}; gluster volume stop ${GLUSTER_VOLUME:-gv0}; gluster volume delete ${GLUSTER_VOLUME:-gv0}; rm -rf ${GLUSTER_BRICK:-/data/brick}"
+    warn "models at ${MODELS_DIR:-/data/models} preserved - manual wipe: rm -rf ${MODELS_DIR:-/data/models}"
   fi
 }
 
@@ -52,16 +52,16 @@ kcv_module_uninstall() {
   local scope="${1:-menu}"
   if [[ "$scope" != "menu" ]]; then
     if kcv_tty; then
-      kcv_confirm "uninstall korvarix pieces (scope: $scope)? gluster data is preserved" || return 0
+      kcv_confirm "uninstall korvarix pieces (scope: $scope)? model data is preserved" || return 0
     fi
     uninstall_run "$scope"
     return 0
   fi
-  echo "  1) uninstall everything (keep brick data)  2) also wipe bricks  0) back"
+  echo "  1) uninstall everything (keep model data + WG keys)  2) also wipe models  0) back"
   local r; read -r -p "select: " r
   case "$r" in
     1) uninstall_run all ;;
-    2) uninstall_run wipe-bricks ;;
+    2) uninstall_run wipe-models ;;
     *) : ;;
   esac
 }
