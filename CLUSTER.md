@@ -90,19 +90,26 @@ The repo `Korvarix/install` needs this layout on `main`:
 
 ```
 install/
-└── modules/
-    ├── manifest.txt
-    ├── lib.sh
-    ├── vpn.sh  gluster.sh  k3s.sh  llama.sh
-    └── health.sh  backup.sh  status.sh  uninstall.sh  wizard.sh
+├── modules/                 # station modules (fetched + sha256-verified)
+│   ├── manifest.txt
+│   ├── lib.sh
+│   ├── vpn.sh  gluster.sh  k3s.sh  llama.sh
+│   └── health.sh  backup.sh  status.sh  uninstall.sh  wizard.sh  korvarix-llm.sh
+└── korvarix-llm/            # the deployable frontend folder (menu 11 clones it)
+    ├── install.sh  install.ps1  Dockerfile.gate  package.json  README.md
+    ├── .env.example         # template ONLY - never commit a real .env
+    ├── .gitignore           # blocks .env
+    ├── gate/  (Dockerfile, gate.js)
+    └── lib/@korvarix/shared/  (env.js)
 ```
 
-(plus `korvarix-llm.sh` — the frontend deploy module; and the repo can host
-the `korvarix-llm/` deployable folder itself for menu 11 to clone).
+**Secrets rule:** only ever push `.env.example` (values empty). The real `.env`
+(lives on the frontend box, holds WEBUI_SECRET_KEY / LLM_SSO_KEY /
+OPEN_WEBUI_API_KEY) is blocked by the folder's `.gitignore` — keep it that way.
 
-Push `korvarix-llm-ai/modules/*` there as-is. Until the first push, the
-station falls back to its local cache — pre-seed a node by copying
-`modules/` to `/var/lib/korvarix-cluster/modules/` manually.
+Push `korvarix-llm-ai/modules/*` and `korvarix-llm/*` (minus real .env) there.
+Until the first push, the station falls back to its local cache — pre-seed a
+node by copying `modules/` to `/var/lib/korvarix-cluster/modules/` manually.
 
 ## Dependency self-check (every step)
 
