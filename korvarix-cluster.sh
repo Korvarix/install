@@ -146,6 +146,7 @@ menu() {
     echo " 9) View logs"
     echo "10) Uninstall pieces"
     echo "11) korvarix-llm frontend (Open WebUI panel: install/gate/nginx)"
+    echo "12) Models & Ollama (sandboxed serve, allowlist, daily patches, policy)"
     echo " 0) Exit"
     local r
     read -r -p "select: " r || exit 0
@@ -161,6 +162,7 @@ menu() {
       9) kcv_run_module status logs ;;
       10) kcv_run_module uninstall ;;
       11) kcv_run_module korvarix-llm ;;
+      12) kcv_run_module ollama ;;
       0) exit 0 ;;
       *) : ;;
     esac
