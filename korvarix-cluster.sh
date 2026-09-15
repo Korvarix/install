@@ -64,18 +64,35 @@ manifest_sha() {
 # re-fetching the manifest each round: right after a push, raw.githubusercontent
 # edges can briefly serve the NEW manifest with an OLD module file (or vice
 # versa) - a transient skew a bare verify would misreport as tampering.
+# Fallback: the api.github.com contents endpoint is commit-addressed and
+# cache-immune, so a mismatch triggers a retry against it before giving up.
 module_fetch_verify() {
-  local name="$1" want="$2" out="$3" attempt got
+  local name="$1" want="$2" out="$3" attempt got raw_url api_url
+  raw_url="${KCV_REPO_URL}/${name}.sh?ts=$(date +%s)"
+  # api.github.com contents endpoint: commit-addressed, cache-immune.
+  # KCV_REPO_URL = .../repos/<owner>/<repo>/contents/... wait no - it is
+  # raw form: https://raw.githubusercontent.com/<owner>/<repo>/<ref>/modules
+  local owner_repo
+  owner_repo="$(printf '%s' "$KCV_REPO_URL" | sed -E 's#https://raw\.githubusercontent\.com/([^/]+/[^/]+).*#\1#')"
+  api_url="https://api.github.com/repos/${owner_repo}/contents/modules/${name}.sh?ref=${KCV_REF:-main}"
   for attempt in 1 2 3 4; do
     if (( attempt > 1 )); then
       sleep $(( (attempt - 1) * 20 ))
       want="$(manifest_sha "$name")"
     fi
     [[ -n "$want" ]] || continue
-    curl -fsSL --retry 2 --max-time 120 -o "$out" "${KCV_REPO_URL}/${name}.sh?ts=$(date +%s)" \
+    curl -fsSL --retry 2 --max-time 120 -o "$out" "$raw_url" \
       || { rm -f "$out"; continue; }
     got="$(sha256sum "$out" | awk '{print $1}')"
     if [[ "$got" == "$want" ]]; then printf '%s\n' "$got"; return 0; fi
+    # edge served stale bytes -> cache-immune API fallback (commit-addressed)
+    if (( attempt == 3 )); then
+      warn "$name sha mismatch from CDN - retrying via api.github.com (cache-free)"
+      curl -fsSL --retry 2 --max-time 120 -H "Accept: application/vnd.github+json" -o "$out" "$api_url" \
+        || { rm -f "$out"; continue; }
+      got="$(sha256sum "$out" | awk '{print $1}')"
+      if [[ "$got" == "$want" ]]; then printf '%s\n' "$got"; return 0; fi
+    fi
   done
   return 1
 }
