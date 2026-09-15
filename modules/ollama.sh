@@ -116,13 +116,16 @@ WantedBy=multi-user.target"
 # $HOME/.ollama and a root HOME leaves root-owned state, (2) if HOME points
 # at the sandbox user's passwd home, root can't write it (permission denied).
 # Running as the service user keeps keys + model layers consistently owned.
+# OLLAMA_HOST must match the daemon's bind (the service unit env carries it;
+# a CLI without it defaults to 127.0.0.1 and misses a VPN-bound daemon).
 _ollama_cli() {
   local dir="${1:-$(state_get ollama_dir)}"
   shift
+  local host="${OLLAMA_BIND:-127.0.0.1}:${OLLAMA_PORT:-11434}"
   if id korvarix-ollama >/dev/null 2>&1 && [[ "${OLLAMA_SANDBOX:-1}" == "1" ]]; then
-    su -s /bin/sh korvarix-ollama -c "HOME='$dir' '$dir/bin/ollama' $*"
+    su -s /bin/sh korvarix-ollama -c "HOME='$dir' OLLAMA_HOST='$host' '$dir/bin/ollama' $*"
   else
-    HOME="$dir" "$dir/bin/ollama" $*
+    HOME="$dir" OLLAMA_HOST="$host" "$dir/bin/ollama" $*
   fi
 }
 
