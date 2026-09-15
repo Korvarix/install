@@ -409,14 +409,19 @@ nginx_upstream_block() {
   if [[ "$with_tls" == "tls" ]]; then
     local listen6_tls=""
     if [[ -n "$listen6" ]]; then listen6_tls="    listen [::]:443 ssl;"; fi
+    # http2 syntax is version-dependent: 'listen 443 ssl http2;' (nginx
+    # <1.25.1, incl. Debian 12's 1.22) vs 'listen 443 ssl; http2 on;' (>=1.25,
+    # where the old form deprecation-warns). Emit whichever this nginx speaks.
+    local h2_directive="    listen 443 ssl http2;"
+    if nginx -V 2>&1 | grep -qE 'nginx/1\.2[5-9]|nginx/2\.'; then
+      h2_directive="    listen 443 ssl;
+    http2 on;"
+    fi
     http_block="location / {
         return 301 https://\$host\$request_uri;
     }"
     tls_block="server {
-    # http2 as its own directive (nginx >= 1.25; the old 'listen ... http2'
-    # form is deprecated and warns on nginx 1.28+)
-    listen 443 ssl;
-    http2 on;
+${h2_directive}
 ${listen6_tls}
     server_name ${LLM_DOMAIN};
 
@@ -791,7 +796,9 @@ local_proxy_status() {
   done
   if [[ -n "$found" ]]; then
     NGINX_CONF="$found"
-    grep -m1 server_name "$found" | sed 's/^ *//;s/;/ /' | sed "s/^/proxy:    (${found}) /"
+    # awk, not sed: the conf path can contain "/" (sed delimiter), which made
+    # status die with "unknown option to `s'"
+    grep -m1 server_name "$found" | awk -v f="$found" '{sub(/^ +/, ""); sub(/;/, " "); printf "proxy:    (%s) %s\n", f, $0}'
     return 0
   fi
   NGINX_CONF=""
