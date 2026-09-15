@@ -11,7 +11,7 @@
 
 set -uo pipefail
 
-KCV_VERSION="0.2.0"
+KCV_VERSION="0.2.1"
 KCV_REPO_URL="${KCV_REPO_URL:-https://raw.githubusercontent.com/Korvarix/install/main/modules}"
 # shellcheck disable=SC2034  # reserved for pinned-release mode
 KCV_REF="${KCV_REF:-main}"
@@ -50,11 +50,34 @@ ensure_curl() {
 # ---- module system -----------------------------------------------------------
 
 module_list() {
-  curl -fsSL --max-time 30 "${KCV_REPO_URL}/manifest.txt" 2>/dev/null || return 1
+  # cache-buster: raw.githubusercontent edges cache ~5min per URL, so right
+  # after a push a box can get a stale-but-self-consistent snapshot (old
+  # manifest + old module) and "up to date" becomes a lie. ts= defeats it.
+  curl -fsSL --max-time 30 "${KCV_REPO_URL}/manifest.txt?ts=$(date +%s)" 2>/dev/null || return 1
 }
 
 manifest_sha() {
   module_list | awk -v n="$1" '$1==n{print $3}'
+}
+
+# fetch one module and verify sha256 against $want. Retries with backoff,
+# re-fetching the manifest each round: right after a push, raw.githubusercontent
+# edges can briefly serve the NEW manifest with an OLD module file (or vice
+# versa) - a transient skew a bare verify would misreport as tampering.
+module_fetch_verify() {
+  local name="$1" want="$2" out="$3" attempt got
+  for attempt in 1 2 3 4; do
+    if (( attempt > 1 )); then
+      sleep $(( (attempt - 1) * 20 ))
+      want="$(manifest_sha "$name")"
+    fi
+    [[ -n "$want" ]] || continue
+    curl -fsSL --retry 2 --max-time 120 -o "$out" "${KCV_REPO_URL}/${name}.sh?ts=$(date +%s)" \
+      || { rm -f "$out"; continue; }
+    got="$(sha256sum "$out" | awk '{print $1}')"
+    if [[ "$got" == "$want" ]]; then printf '%s\n' "$got"; return 0; fi
+  done
+  return 1
 }
 
 module_sync() {
@@ -63,26 +86,49 @@ module_sync() {
   local manifest
   manifest="$(module_list)" || die "cannot reach module repo ($KCV_REPO_URL) - check network or set KCV_REPO_URL"
   mkdir -p "$KCV_MODULES_DIR"
-  printf '%s\n' "$manifest" > "${KCV_MODULES_DIR}/manifest.txt"
-  local updated=0 name ver sha want cur got
+  local updated=0 failed=0 name ver sha want cur got
   while read -r name ver sha _rest; do
     [[ -n "$name" ]] || continue
+    [[ "$name" == "korvarix-station" ]] && continue
     want="${KCV_MODULES_DIR}/${name}.sh"
     cur="none"
     [[ -f "$want" ]] && cur="$(sha256sum "$want" | awk '{print $1}')"
-    if [[ "$cur" != "$sha" ]]; then
-      curl -fsSL --retry 3 --max-time 120 -o "${want}.new" "${KCV_REPO_URL}/${name}.sh" \
-        || die "download failed: $name (repo: $KCV_REPO_URL)"
-      got="$(sha256sum "${want}.new" | awk '{print $1}')"
-      [[ "$got" == "$sha" ]] || die "checksum mismatch for $name (expected $sha, got $got) - refusing to install"
-      mv "${want}.new" "$want"
-      updated=$((updated+1))
-      ok "module updated: $name ($ver)"
+    [[ "$cur" == "$sha" ]] && continue
+    got="$(module_fetch_verify "$name" "$sha" "${want}.new")"
+    if [[ -z "$got" ]]; then
+      warn "checksum mismatch for $name (manifest: $sha) - CDN skew or broken push; cached version kept"
+      rm -f "${want}.new"
+      failed=$((failed+1))
+      continue
     fi
+    mv "${want}.new" "$want"
+    updated=$((updated+1))
+    ok "module updated: $name ($ver)"
   done <<EOF2
 $manifest
 EOF2
+  if [[ "$failed" -gt 0 ]]; then
+    die "$failed module(s) failed verification after retries - repo briefly inconsistent (CDN skew) or a bad push; wait a few minutes and re-run update. Cached modules are untouched."
+  fi
+  # commit the cached manifest only after EVERY module verified - a failed
+  # sync must never leave the cache referencing files it does not have
+  printf '%s\n' "$manifest" > "${KCV_MODULES_DIR}/manifest.txt"
   [[ "$updated" -eq 0 ]] && ok "all modules up to date"
+  # station self-update: the station itself rides the same manifest
+  # (korvarix-station <ver> <sha>). Replace in place + exec if changed,
+  # else a new-module release can depend on station code the box never got.
+  local st_sha st_cur base_url
+  st_sha="$(printf '%s\n' "$manifest" | awk '$1=="korvarix-station"{print $3}')"
+  if [[ -n "$st_sha" ]]; then
+    base_url="${KCV_REPO_URL%/modules}"
+    st_cur="$(sha256sum "$SELF_PATH" 2>/dev/null | awk '{print $1}')"
+    if [[ "$st_cur" != "$st_sha" ]]; then
+      curl -fsSL --retry 2 --max-time 120 -o "${SELF_PATH}.new" "${base_url}/korvarix-cluster.sh?ts=$(date +%s)" \
+        && [[ "$(sha256sum "${SELF_PATH}.new" | awk '{print $1}')" == "$st_sha" ]] \
+        && mv "${SELF_PATH}.new" "$SELF_PATH" && chmod +x "$SELF_PATH" \
+        && ok "station updated - re-run your command" && exec bash "$SELF_PATH" "$@"
+    fi
+  fi
   return 0
 }
 
