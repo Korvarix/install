@@ -13,10 +13,10 @@ LLAMA_PORT="${LLAMA_PORT:-8080}"
 # broke twice, so: build ALL (GGML_RPC=ON includes the RPC backend), then
 # resolve the produced binaries by glob - resilient to the next rename.
 _llama_pick() {
-  # first existing candidate wins
+  # first EXECUTABLE candidate wins (a non-existent fallback must not pass)
   local c
   for c in "$@"; do
-    [[ -n "$c" ]] && return 0
+    [[ -n "$c" && -x "$c" ]] && return 0
   done
   return 1
 }
@@ -55,7 +55,13 @@ llama_build() {
     if [[ -n "${LLAMA_CPP_REF:-}" ]]; then
       git checkout "$LLAMA_CPP_REF" || exit 10
     fi
+    # a CMakeCache from an old RPC-less configure silently drops the RPC
+    # backend (cache wins over -D flags) - nuke it when the flag is missing
+    if [[ -f build/CMakeCache.txt ]] && ! grep -q 'GGML_RPC:BOOL=ON' build/CMakeCache.txt; then
+      rm -rf build
+    fi
     cmake -B build -DGGML_RPC=ON -DGGML_NATIVE=ON -DCMAKE_BUILD_TYPE=Release 2>&1 || exit 10
+    grep -q 'GGML_RPC:BOOL=ON' build/CMakeCache.txt 2>/dev/null || { echo "FATAL: GGML_RPC not ON in CMakeCache.txt"; exit 10; }
     # ALL, not --target: upstream keeps renaming targets; GGML_RPC=ON already
     # includes the RPC backend in the default set, so ALL always has it
     cmake --build build -j"$jobs" 2>&1 || exit 11
@@ -66,6 +72,8 @@ llama_build() {
     (( rc == 10 )) && die "cmake configure failed - output above"
     die "build failed - output above"
   fi
+  # one-line success evidence (silence here caused an entire debugging saga)
+  printf '%s\n' "$out" | grep 'Built target' | tail -1 | sed 's/^/  /'
   [[ -x "$(_llama_rpc_bin)" ]] || die "build did not produce an rpc-server binary (glob: $LLAMA_DIR/build/bin/*rpc-server)"
   [[ -x "$(_llama_serve_bin)" ]] || die "build did not produce a llama-server binary"
   ok "llama: build complete ($(nproc) cores, $jobs jobs)"
