@@ -108,8 +108,8 @@ OPENAI_API_BASE_URL=
 OPENAI_API_KEY=
 
 # ---- nginx proxy (./install.sh nginx) ---------------------------------------
-# Public hostname that proxies to 127.0.0.1:$WEBUI_PORT. DNS must point at
-# this machine and port 80 must be reachable for the Let's Encrypt challenge.
+# Public hostname that proxies to 127.0.0.1:WEBUI_PORT (see above). DNS must
+# point at this machine and port 80 must be reachable for Let's Encrypt.
 LLM_DOMAIN=${LLM_DOMAIN:-}
 # Email for Let's Encrypt expiry notices.
 LE_EMAIL=${LE_EMAIL:-admin@korvarix.com}
