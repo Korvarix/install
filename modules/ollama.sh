@@ -246,7 +246,10 @@ ollama_pick_models() {
 
 # browse UI: returns "NUM NUM ..." on stdout, or "@ALL"; return 1 = cancel
 ollama_pick_browse() {
-  local page=1 total=${#OLLAMA_CATALOG[@]} pages=$(( (total + CATALOG_PAGES - 1) / CATALOG_PAGES ))
+  local page=1 total=${#OLLAMA_CATALOG[@]}
+  # separate line: a single `local a=1 b=$((a+1))` expands $a BEFORE a is
+  # assigned, which dies under set -u ("total: unbound variable")
+  local pages=$(( (total + CATALOG_PAGES - 1) / CATALOG_PAGES ))
   local chosen=() reply n token
   while true; do
     echo
