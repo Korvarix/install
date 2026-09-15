@@ -27,16 +27,21 @@ ollama_install() {
   log "ollama: installing (vendored binary, sandboxed)"
   kcv_virt_check
   kcv_base_tools
-  dep_ensure "curl:curl" "useradd:passwd"
-  net_gate "https://ollama.com/download/ollama-linux-amd64.tgz"
+  dep_ensure "curl:curl" "useradd:passwd" "tar:tar"
+  # current releases ship tar.zst via GitHub Releases (the old
+  # ollama.com/download/*.tgz URL 404s since ~v0.14); tar needs zstd for it
+  net_gate "https://github.com/ollama/ollama/releases"
 
   local dir="${KCV_LIB_DIR}/ollama"
   mkdir -p "$dir/bin" "${OLLAMA_MODELS:-$dir/models}"
   if [[ ! -x "$dir/bin/ollama" ]]; then
-    fetch "https://ollama.com/download/ollama-linux-amd64.tgz" "/tmp/ollama.tgz"
-    tar -xzf /tmp/ollama.tgz -C "$dir" --strip-components=0 bin/ollama 2>/dev/null \
-      || tar -xzf /tmp/ollama.tgz -C "$dir"
-    rm -f /tmp/ollama.tgz
+    # --zstd needs the zstd lib; install it just-in-time (dep check by binary)
+    command -v zstd >/dev/null 2>&1 || dep_ensure "zstd:zstd"
+    log "ollama: downloading ollama-linux-amd64.tar.zst (large, ~1.3GB)"
+    fetch "https://github.com/ollama/ollama/releases/latest/download/ollama-linux-amd64.tar.zst" "/tmp/ollama.tar.zst"
+    tar -I zstd -xf /tmp/ollama.tar.zst -C "$dir" 2>/dev/null || tar --zstd -xf /tmp/ollama.tar.zst -C "$dir" \
+      || die "extraction failed (tar without zstd support?)"
+    rm -f /tmp/ollama.tar.zst
   fi
   "$dir/bin/ollama" --version || die "ollama binary failed to run"
 
