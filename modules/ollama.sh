@@ -252,8 +252,11 @@ ollama_pick_browse() {
   local pages=$(( (total + CATALOG_PAGES - 1) / CATALOG_PAGES ))
   local chosen=() reply token
   while true; do
-    echo
-    printf '\033[1;35m== models  page %d/%d ==\033[0m\n' "$page" "$pages"
+    # full-screen redraw: after a category jump the previous render would
+    # otherwise scroll off, leaving the user staring at a bare "> " prompt
+    printf '\033[H\033[2J'
+    printf '\033[1;35m== korvarix model catalog  page %d/%d ==\033[0m\n' "$page" "$pages"
+    printf '\033[1;36m  numbers are GLOBAL (same number = same model on every page)\033[0m\n'
     local i start end
     start=$(( (page-1)*CATALOG_PAGES + 1 ))
     end=$(( start + CATALOG_PAGES - 1 ))
@@ -264,7 +267,7 @@ ollama_pick_browse() {
       local tag=" "
       local c
       for c in "${chosen[@]}"; do [[ "$c" == "$i" ]] && tag="*"; done
-      printf ' %s%2d) [%-7s] %-46s %-8s %s\n' "$tag" "$i" "$cat" "$slug" "$ram GB" "$desc"
+      printf ' %s%2d) [%-7s] %-40s %-8s %s\n' "$tag" "$i" "$cat" "$slug" "$ram GB" "$desc"
     done
     echo
     if [[ ${#chosen[@]} -gt 0 ]]; then
