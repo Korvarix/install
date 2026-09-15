@@ -20,14 +20,24 @@ _llama_pick() {
 }
 
 _llama_rpc_target() {
+  # generator-independent: grep the generated build db for the exact rule.
+  # ('--target help' output varies by generator and is often empty.)
   local t
-  t="$(cmake --build "$LLAMA_DIR/build" --target help 2>/dev/null | grep -oE '[a-z0-9_-]*rpc-server' | head -1)"
+  if [[ -f "$LLAMA_DIR/build/Makefile" ]]; then
+    t="$(grep -hoE '^[a-zA-Z0-9_-]*rpc-server[^:]*:' "$LLAMA_DIR/build/Makefile" 2>/dev/null | head -1 | tr -d ':')"
+  elif [[ -f "$LLAMA_DIR/build/build.ninja" ]]; then
+    t="$(grep -oE '^(build )?[a-zA-Z0-9_-]*rpc-server[^:]*:' "$LLAMA_DIR/build/build.ninja" 2>/dev/null | head -1 | sed 's/^build //; s/:$//')"
+  fi
   _llama_pick "$t" rpc-server
 }
 
 _llama_serve_target() {
   local t
-  t="$(cmake --build "$LLAMA_DIR/build" --target help 2>/dev/null | grep -oE '[a-z0-9_-]*llama-server' | head -1)"
+  if [[ -f "$LLAMA_DIR/build/Makefile" ]]; then
+    t="$(grep -hoE '^[a-zA-Z0-9_-]*llama-server[^:]*:' "$LLAMA_DIR/build/Makefile" 2>/dev/null | grep -v rpc | head -1 | tr -d ':')"
+  elif [[ -f "$LLAMA_DIR/build/build.ninja" ]]; then
+    t="$(grep -hoE '^(build )?[a-zA-Z0-9_-]*llama-server[^:]*:' "$LLAMA_DIR/build/build.ninja" 2>/dev/null | grep -v rpc | head -1 | sed 's/^build //; s/:$//')"
+  fi
   _llama_pick "$t" llama-server
 }
 
@@ -59,9 +69,8 @@ llama_build() {
   jobs="$(free -m | awk '/Mem:/{m=$2} END{printf "%d", m/1100}')"
   (( jobs < 1 )) && jobs=1
   local out rc rpc_tgt serve_tgt
-  rpc_tgt="$(_llama_rpc_target)"
-  serve_tgt="$(_llama_serve_target)"
-  log "llama: targets: $rpc_tgt + $serve_tgt"
+  # probe targets AFTER configure: on a fresh clone build/ does not exist yet,
+  # so pre-probing found nothing (and fell back to stale legacy names)
   out="$(
     cd "$LLAMA_DIR" || exit 10
     git fetch --tags --force 2>/dev/null || true
@@ -69,12 +78,19 @@ llama_build() {
       git checkout "$LLAMA_CPP_REF" || exit 10
     fi
     cmake -B build -DGGML_RPC=ON -DGGML_NATIVE=ON -DCMAKE_BUILD_TYPE=Release 2>&1 || exit 10
-    cmake --build build --target "$rpc_tgt" "$serve_tgt" -j"$jobs" 2>&1 || exit 11
   )" && rc=0 || rc=$?
+  if (( rc != 0 )); then
+    printf '%s\n' "$out" | tail -25 >&2
+    die "cmake configure failed - output above"
+  fi
+  rpc_tgt="$(_llama_rpc_target)"
+  serve_tgt="$(_llama_serve_target)"
+  log "llama: targets: $rpc_tgt + $serve_tgt"
+  out="$(cd "$LLAMA_DIR" && cmake --build build --target "$rpc_tgt" "$serve_tgt" -j"$jobs" 2>&1)" \
+    && rc=0 || rc=$?
   if (( rc != 0 )); then
     # cmake noise is enormous - show only the tail where the real error lives
     printf '%s\n' "$out" | tail -25 >&2
-    (( rc == 10 )) && die "cmake configure failed - output above"
     die "build failed - output above"
   fi
   [[ -x "$(_llama_rpc_bin)" ]] || die "build did not produce rpc-server ($rpc_tgt)"
