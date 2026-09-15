@@ -253,8 +253,8 @@ ollama_pick_browse() {
   local chosen=() reply token
   while true; do
     echo
-    printf '\033[1;35m== korvarix model catalog  page %d/%d ==\033[0m\n' "$page" "$pages"
-    printf '\033[1;36m  numbers are GLOBAL (same number = same model on every page)\033[0m\n'
+    printf '\033[1;35m== korvarix model catalog  page %d/%d ==\033[0m\n' "$page" "$pages" >&2
+    printf '\033[1;36m  numbers are GLOBAL (same number = same model on every page)\033[0m\n' >&2
     local i start end
     start=$(( (page-1)*CATALOG_PAGES + 1 ))
     end=$(( start + CATALOG_PAGES - 1 ))
@@ -265,17 +265,19 @@ ollama_pick_browse() {
       local tag=" "
       local c
       for c in "${chosen[@]}"; do [[ "$c" == "$i" ]] && tag="*"; done
-      printf ' %s%2d) [%-7s] %-40s %-8s %s\n' "$tag" "$i" "$cat" "$slug" "$ram GB" "$desc"
+      # >&2: this function runs inside $( ) - stdout is the CAPTURED return
+      # value; only the final selection line may go to stdout
+      printf ' %s%2d) [%-7s] %-40s %-8s %s\n' "$tag" "$i" "$cat" "$slug" "$ram GB" "$desc" >&2
     done
-    echo
+    echo >&2
     if [[ ${#chosen[@]} -gt 0 ]]; then
       local names="" c
       for c in "${chosen[@]}"; do names+="${OLLAMA_CATALOG[$((c-1))]%%|*} "; done
-      printf '\033[1;32m  picked: %s\033[0m\n' "${names% }"
+      printf '\033[1;32m  picked: %s\033[0m\n' "${names% }" >&2
     else
-      echo "  picked: (none yet)"
+      echo "  picked: (none yet)" >&2
     fi
-    echo "  type numbers to ADD | n/p page | category (CHAT REASON CODE RP UNC SMALL) | done | x cancel"
+    echo "  type numbers to ADD | n/p page | category (CHAT REASON CODE RP UNC SMALL) | done | x cancel" >&2
     read -r -e -p "> " reply || return 1
     reply="$(xargs <<<"$reply")"
     case "$reply" in
@@ -283,8 +285,8 @@ ollama_pick_browse() {
       done|d) [[ ${#chosen[@]} -eq 0 ]] && { warn "nothing picked yet - type model numbers first"; continue; }
               printf '%s\n' "${chosen[*]}"; return 0 ;;
       all) printf '@ALL\n'; return 0 ;;
-      n|next) if (( page < pages )); then page=$((page+1)); else echo "  (last page)"; fi ;;
-      p|prev) if (( page > 1 )); then page=$((page-1)); else echo "  (first page)"; fi ;;
+      n|next) if (( page < pages )); then page=$((page+1)); else echo "  (last page)" >&2; fi ;;
+      p|prev) if (( page > 1 )); then page=$((page-1)); else echo "  (first page)" >&2; fi ;;
       *)
         local had_any=0
         for token in $reply; do
@@ -305,7 +307,7 @@ ollama_pick_browse() {
             for c in "${chosen[@]}"; do [[ "$c" == "$token" ]] && have=1; done
             if (( ! have )); then chosen+=("$token"); fi
           else
-            echo "  ? $token"
+            echo "  ? $token" >&2
           fi
         done
         (( had_any )) || warn "nothing valid in: $reply"
