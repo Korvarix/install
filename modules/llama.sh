@@ -13,10 +13,11 @@ LLAMA_PORT="${LLAMA_PORT:-8080}"
 # broke twice, so: build ALL (GGML_RPC=ON includes the RPC backend), then
 # resolve the produced binaries by glob - resilient to the next rename.
 _llama_pick() {
-  # first EXECUTABLE candidate wins (a non-existent fallback must not pass)
+  # first EXECUTABLE candidate wins; ECHO it (callers capture stdout), fail
+  # if none is executable (a non-existent fallback must not pass)
   local c
   for c in "$@"; do
-    [[ -n "$c" && -x "$c" ]] && return 0
+    if [[ -n "$c" && -x "$c" ]]; then printf '%s\n' "$c"; return 0; fi
   done
   return 1
 }
