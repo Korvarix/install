@@ -119,7 +119,7 @@ llama_server_stop() {
 
 llama_model_set() {
   require_root
-  local mf="$1"
+  local mf="${1:-}"
   if [[ -z "$mf" ]] && kcv_tty; then
     ls -lh "${MODELS_DIR:-/data/models}"/*.gguf 2>/dev/null | awk '{print "  " $NF " (" $5 ")"}'
     read -r -p "gguf filename: " mf || die "input failed"
@@ -136,7 +136,7 @@ llama_model_set() {
 llama_add_peer() {
   require_root
   kcv_require_env
-  local peer="$1"
+  local peer="${1:-}"
   if [[ -z "$peer" ]] && kcv_tty; then
     read -r -p "donor VPN IP (10.8.0.x, shown when its rpc-server started): " peer || die "input failed"
   fi

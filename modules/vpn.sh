@@ -138,7 +138,7 @@ EOF
 vpn_issue() {
   require_root
   kcv_require_env
-  local name="$1"
+  local name="${1:-}"
   if [[ -z "$name" ]] && kcv_tty; then
     read -r -p "peer name (NODE_NAME of the box): " name || die "input failed"
   fi
@@ -188,7 +188,7 @@ EOF
 vpn_join() {
   require_root
   kcv_require_env
-  local conf_file="$1"
+  local conf_file="${1:-}"
   if [[ -z "$conf_file" ]] && kcv_tty; then
     read -r -p "path to peer .conf file: " conf_file || die "input failed"
   fi
@@ -229,7 +229,7 @@ vpn_list() {
 # drop one peer from the hub config + tracking (box rebuilt/retired)
 vpn_revoke() {
   require_root
-  local name="$1"
+  local name="${1:-}"
   if [[ -z "$name" ]] && kcv_tty; then
     read -r -p "peer name to revoke: " name || die "input failed"
   fi
