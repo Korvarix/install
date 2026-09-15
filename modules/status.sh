@@ -6,7 +6,7 @@ status_board() {
   kcv_init
   echo
   log "status: $(hostname) (role: $(state_get role))"
-  printf '%-14s %s\n' "vpn" "$(systemctl is-active wg-quick@korvarix 2>/dev/null || systemctl is-active korvarix-wg-hub 2>/dev/null || echo 'n/a') $(ip -4 addr show wg0 2>/dev/null | grep -oE '10\.8\.0\.[0-9]+' | head -1)"
+  printf '%-14s %s\n' "vpn" "$(systemctl is-active wg-quick@wg0 2>/dev/null || echo 'n/a') $(ip -4 addr show wg0 2>/dev/null | grep -oE '10\.8\.0\.[0-9]+' | head -1)"
   svc_active llama-server && echo "  llama-server: running (bind ${LLAMA_BIND:-$NODE_VPN_IP}, port ${LLAMA_PORT:-8080})" || echo "  llama-server: stopped"
   svc_active rpc-server && echo "  rpc-server: running ($(state_get rpc_port))" || echo "  rpc-server: stopped"
   if [[ "$(state_get role)" == "master" ]]; then
@@ -27,7 +27,7 @@ logs_view() {
   case "$r" in
     1) journalctl -u korvarix-llama-server -n "$n" --no-pager ;;
     2) journalctl -u korvarix-rpc-server -n "$n" --no-pager ;;
-    3) journalctl -u korvarix-wg-hub -n "$n" --no-pager 2>/dev/null || journalctl -u "wg-quick@korvarix" -n "$n" --no-pager ;;
+    3) journalctl -u "wg-quick@wg0" -n "$n" --no-pager ;;
     4) journalctl -u korvarix-ollama -n "$n" --no-pager 2>/dev/null || warn "ollama not installed" ;;
     5) tail -"$n" "$KCV_LOG_DIR/health.log" 2>/dev/null || warn "no health log" ;;
     6) tail -"$n" "$KCV_LOG_DIR/backup.log" 2>/dev/null || warn "no backup log" ;;

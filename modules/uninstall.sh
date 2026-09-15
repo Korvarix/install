@@ -22,11 +22,9 @@ uninstall_run() {
   fi
 
   if [[ "$scope" == "all" || "$scope" == "vpn" ]]; then
-    systemctl stop korvarix-wg-hub 2>/dev/null || true
-    systemctl disable korvarix-wg-hub 2>/dev/null || true
-    systemctl stop "wg-quick@korvarix" 2>/dev/null || true
-    systemctl disable "wg-quick@korvarix" 2>/dev/null || true
-    rm -f /etc/systemd/system/korvarix-wg-hub.service /etc/wireguard/korvarix*.conf
+    systemctl stop "wg-quick@wg0" 2>/dev/null || true
+    systemctl disable "wg-quick@wg0" 2>/dev/null || true
+    rm -f /etc/wireguard/wg0.conf
     ip link del wg0 2>/dev/null || true
   fi
 

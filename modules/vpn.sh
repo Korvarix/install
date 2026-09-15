@@ -68,6 +68,27 @@ _wg_sync() {
     || systemctl restart "wg-quick@${WG_IFACE}" 2>/dev/null || true
 }
 
+# bring wg0 up via systemd, surfacing the REAL error (a bare "Job failed" with
+# swallowed output is undiagnosable - the journal holds the actual cause)
+_wg_up() {
+  local out
+  if ! out="$(systemctl restart "wg-quick@${WG_IFACE}" 2>&1)"; then
+    printf '%s\n' "$out" >&2
+    journalctl -u "wg-quick@${WG_IFACE}" -n 15 --no-pager 2>/dev/null | sed 's/^/    /' >&2
+    die "wg-quick@${WG_IFACE} failed - raw error + journal above"
+  fi
+  systemctl enable "wg-quick@${WG_IFACE}" >/dev/null 2>&1 || true
+}
+
+# a stale wg0 from a half-finished previous run makes wg-quick fail with
+# "File exists" forever - the .conf file, not the interface, is the truth
+_wg_stale_clear() {
+  if ip link show "$WG_IFACE" >/dev/null 2>&1; then
+    warn "stale $WG_IFACE interface found - removing it (config file is kept)"
+    wg-quick down "$WG_IFACE" >/dev/null 2>&1 || ip link del "$WG_IFACE" 2>/dev/null || true
+  fi
+}
+
 # ---- hub ----------------------------------------------------------------------
 
 vpn_hub_setup() {
@@ -98,8 +119,8 @@ EOF
   state_set role vpn
   state_set wg_hub_pubkey "$(_wg_hub_pubkey)"
 
-  systemctl enable --now "wg-quick@${WG_IFACE}" >/dev/null 2>&1 || \
-    { systemctl daemon-reload; systemctl restart "wg-quick@${WG_IFACE}"; }
+  _wg_stale_clear
+  _wg_up
   sleep 2
   wg show "$WG_IFACE" >/dev/null 2>&1 || die "wg hub failed - journalctl -u wg-quick@${WG_IFACE}"
   fw_allow udp "$WG_PORT"
@@ -172,8 +193,8 @@ vpn_join() {
   fi
   cp "$conf_file" "$WG_CLI_CONF"
   chmod 600 "$WG_CLI_CONF"
-  systemctl enable --now "wg-quick@${WG_IFACE}" >/dev/null 2>&1 || \
-    { systemctl daemon-reload; systemctl restart "wg-quick@${WG_IFACE}"; }
+  _wg_stale_clear
+  _wg_up
   sleep 2
   systemctl is-active --quiet "wg-quick@${WG_IFACE}" || die "wg-quick failed - journalctl -u wg-quick@${WG_IFACE}"
   local tun_ip

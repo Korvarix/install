@@ -390,8 +390,11 @@ ollama_policy_push() {
   fi
   log "policy: pushing to $host"
   ssh_remote "$host" "mkdir -p /etc/korvarix-llm" || die "ssh to frontend failed"
-  rsync -a --chmod=F640 "${KCV_LIB_DIR}/korvarix-policy.json" "root@${host}:/etc/korvarix-llm/korvarix-policy.json" || die "rsync policy failed"
-  rsync -a "${KCV_LIB_DIR}/korvarix-policy.json.sha256" "root@${host}:/etc/korvarix-llm/korvarix-policy.json.sha256" || die "rsync checksum failed"
+  # perms 644: the gate container runs as the non-root "node" user — 640 leaves
+  # the policy root-only and the gate reports "no policy file" (found in dry run)
+  rsync -a --chmod=F644 "${KCV_LIB_DIR}/korvarix-policy.json" "root@${host}:/etc/korvarix-llm/korvarix-policy.json" || die "rsync policy failed"
+  rsync -a --chmod=F644 "${KCV_LIB_DIR}/korvarix-policy.json.sha256" "root@${host}:/etc/korvarix-llm/korvarix-policy.json.sha256" || die "rsync checksum failed"
+  ssh_remote "$host" "mkdir -p /var/log/korvarix && (chown -R 1000:1000 /var/log/korvarix 2>/dev/null || chmod 777 /var/log/korvarix)" || true
   ssh_remote "$host" "systemctl restart korvarix-gate 2>/dev/null || docker restart korvarix-llm-gate 2>/dev/null || true"
   ok "policy pushed + gate reloaded on $host"
 }

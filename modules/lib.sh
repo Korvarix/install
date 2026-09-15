@@ -91,7 +91,8 @@ dep_ensure() {
 net_gate() {
   local url="$1"
   log "checking reachability: $url"
-  curl -fsSI --max-time 10 -o /dev/null "$url" 2>/dev/null || \
+  # GET not HEAD: several CDNs reject bare HEAD requests and flake the gate
+  curl -fsS --max-time 15 -o /dev/null "$url" 2>/dev/null || \
     die "cannot reach $url - check network/DNS/firewall, then re-run"
 }
 
@@ -157,7 +158,9 @@ fw_allow_from() {
 wg_base() {
   kcv_virt_check
   kcv_base_tools
-  dep_ensure "wg:wireguard-tools" "modprobe:kmod"
+  # wg-quick hard-depends on `ip` (iproute2) - minimal images can lack it and
+  # then every wg-quick start dies with a bare "control process exited" error
+  dep_ensure "wg:wireguard-tools" "modprobe:kmod" "ip:iproute2"
   modprobe wireguard 2>/dev/null || true
   # openvz/lxc hosts can lack the module - fail loudly (purchase checklist: KVM only)
   if ! lsmod 2>/dev/null | grep -q '^wireguard' && [[ ! -e /sys/module/wireguard ]]; then

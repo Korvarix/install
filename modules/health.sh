@@ -57,21 +57,16 @@ health_run() {
   local failures=0
 
   # ---- vpn (wireguard) ----
-  if systemctl is-active --quiet "wg-quick@${KCV_PREFIX}" 2>/dev/null; then
+  if systemctl is-active --quiet "wg-quick@wg0" 2>/dev/null; then
     if ip -4 addr show wg0 2>/dev/null | grep -q '10\.8\.0\.'; then
       h_alert vpn ok "tunnel up"
     else
       h_alert vpn fail "wg-quick active but wg0 has no 10.8.0.x"
       failures=$((failures+1))
     fi
-  elif systemctl is-active --quiet "${KCV_PREFIX}-wg-hub" 2>/dev/null; then
-    # hub role: also verify the interface actually exists
-    if ip link show wg0 >/dev/null 2>&1; then
-      h_alert vpn ok "hub running"
-    else
-      h_alert vpn fail "hub service up but wg0 missing"
-      failures=$((failures+1))
-    fi
+  elif ip link show wg0 >/dev/null 2>&1; then
+    # hub role: interface up even if wg-quick unit shows inactive
+    h_alert vpn ok "hub interface up"
   elif [[ "$(state_get vpn_expected)" == "1" ]]; then
     h_alert vpn fail "no wireguard service active"
     failures=$((failures+1))

@@ -41,8 +41,8 @@ rpc_start() {
   systemctl stop "${KCV_PREFIX}-rpc-server" 2>/dev/null || true
   svc_write "rpc-server" "[Unit]
 Description=korvarix llama.cpp RPC server
-After=network-online.target
-Wants=wg-quick@korvarix.service
+After=network-online.target wg-quick@wg0.service
+Wants=wg-quick@wg0.service
 [Service]
 Type=simple
 ExecStart=$LLAMA_DIR/build/bin/rpc-server -p $RPC_PORT -H $NODE_VPN_IP
@@ -95,8 +95,8 @@ llama_server_start() {
   systemctl stop "${KCV_PREFIX}-llama-server" 2>/dev/null || true
   svc_write "llama-server" "[Unit]
 Description=korvarix llama-server (OpenAI-compatible)
-After=network-online.target
-Wants=wg-quick@korvarix.service
+After=network-online.target wg-quick@wg0.service
+Wants=wg-quick@wg0.service
 [Service]
 Type=simple
 ExecStart=$LLAMA_DIR/build/bin/llama-server -m $model $rpc_args -ngl 0 -c ${N_CTX:-8192} ${N_THREADS:+-t $N_THREADS} --host $bind --port $LLAMA_PORT
