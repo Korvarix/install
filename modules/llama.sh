@@ -17,20 +17,33 @@ llama_build() {
   if [[ ! -d "$LLAMA_DIR/.git" ]]; then
     git clone --depth 1 https://github.com/ggerganov/llama.cpp "$LLAMA_DIR" || die "clone failed"
   fi
-  (
-    cd "$LLAMA_DIR" || die "cannot enter $LLAMA_DIR"
+  # parallel jobs from RAM, not cores: a 4GB donor running 16-way g++ on
+  # C++ sources hits the OOM killer and the build "fails" mysteriously
+  local jobs
+  jobs="$(free -m | awk '/Mem:/{m=$2} END{printf "%d", m/1100}')"
+  (( jobs < 1 )) && jobs=1
+  local out rc
+  out="$(
+    cd "$LLAMA_DIR" || exit 10
     git fetch --tags --force 2>/dev/null || true
     if [[ -n "${LLAMA_CPP_REF:-}" ]]; then
-      git checkout "$LLAMA_CPP_REF" || die "checkout $LLAMA_CPP_REF failed"
+      git checkout "$LLAMA_CPP_REF" || exit 10
     fi
-    cmake -B build -DGGML_RPC=ON -DGGML_NATIVE=ON >/dev/null || die "cmake configure failed"
-    cmake --build build -j"$(nproc)" >/dev/null || die "build failed"
-  )
+    cmake -B build -DGGML_RPC=ON -DGGML_NATIVE=ON -DCMAKE_BUILD_TYPE=Release 2>&1 || exit 10
+    # explicit targets: the default ALL set may not include the RPC backend
+    cmake --build build --target rpc-server llama-server -j"$jobs" 2>&1 || exit 11
+  )" && rc=0 || rc=$?
+  if (( rc != 0 )); then
+    # cmake noise is enormous - show only the tail where the real error lives
+    printf '%s\n' "$out" | tail -25 >&2
+    (( rc == 10 )) && die "cmake configure failed - output above"
+    die "build failed - output above"
+  fi
   local b
   for b in rpc-server llama-server; do
     [[ -x "$LLAMA_DIR/build/bin/$b" ]] || die "build did not produce $b"
   done
-  ok "llama: build complete ($(nproc) cores)"
+  ok "llama: build complete ($(nproc) cores, $jobs jobs)"
 }
 
 rpc_start() {
