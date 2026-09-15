@@ -111,6 +111,21 @@ WantedBy=multi-user.target"
   ok "ollama: serving on ${OLLAMA_BIND:-127.0.0.1}:${OLLAMA_PORT:-11434} (user $owner, hardened)"
 }
 
+# run the ollama binary AS the sandbox user with a HOME the user owns.
+# Pulling as root fails two ways: (1) ollama writes its identity key to
+# $HOME/.ollama and a root HOME leaves root-owned state, (2) if HOME points
+# at the sandbox user's passwd home, root can't write it (permission denied).
+# Running as the service user keeps keys + model layers consistently owned.
+_ollama_cli() {
+  local dir="${1:-$(state_get ollama_dir)}"
+  shift
+  if id korvarix-ollama >/dev/null 2>&1 && [[ "${OLLAMA_SANDBOX:-1}" == "1" ]]; then
+    su -s /bin/sh korvarix-ollama -c "HOME='$dir' '$dir/bin/ollama' $*"
+  else
+    HOME="$dir" "$dir/bin/ollama" $*
+  fi
+}
+
 # pull exactly the allowlisted models (never auto-extends the list)
 ollama_pull() {
   require_root
@@ -127,7 +142,7 @@ ollama_pull() {
   local m
   for m in $MODELS_ALLOWLIST; do
     log "ollama: ensuring $m (this can take a while on first pull)"
-    "$dir/bin/ollama" pull "$m" || warn "pull failed: $m (check disk space)"
+    _ollama_cli "$dir" pull "$m" || warn "pull failed: $m (check disk space)"
   done
   ok "ollama: allowlist models present"
 }
@@ -384,17 +399,17 @@ ollama_daily_maintenance() {
   [[ -n "$dir" && -x "$dir/bin/ollama" ]] || exit 0
   local m
   for m in $MODELS_ALLOWLIST; do
-    "$dir/bin/ollama" pull "$m" >> "$KCV_LOG_DIR/ollama-pull.log" 2>&1 || true
+    _ollama_cli "$dir" pull "$m" >> "$KCV_LOG_DIR/ollama-pull.log" 2>&1 || true
   done
   # prune non-allowlisted models (defense: API cannot install models, and any
   # stray model is removed so disk + RAM stay within the sandbox budget)
   local installed
-  installed="$("$dir/bin/ollama" list 2>/dev/null | awk 'NR>1{print $1}')"
+  installed="$(_ollama_cli "$dir" list 2>/dev/null | awk 'NR>1{print $1}')"
   for m in $installed; do
     local keep=0
     for a in $MODELS_ALLOWLIST; do [[ "$m" == "$a" ]] && keep=1; done
     if [[ "$keep" != "1" ]]; then
-      "$dir/bin/ollama" rm "$m" >> "$KCV_LOG_DIR/ollama-pull.log" 2>&1 || true
+      _ollama_cli "$dir" rm "$m" >> "$KCV_LOG_DIR/ollama-pull.log" 2>&1 || true
       echo "$(date -Is) pruned non-allowlisted model: $m" >> "$KCV_LOG_DIR/ollama-pull.log"
     fi
   done
@@ -477,7 +492,7 @@ ollama_status() {
   dir="$(state_get ollama_dir)"
   svc_active ollama && echo "ollama: running (127.0.0.1:$(state_get ollama_port))" || echo "ollama: stopped"
   if [[ -n "$dir" && -x "$dir/bin/ollama" ]]; then
-    "$dir/bin/ollama" list 2>/dev/null | sed 's/^/  /'
+    _ollama_cli "$dir" list 2>/dev/null | sed 's/^/  /'
   fi
   echo "allowlist: ${MODELS_ALLOWLIST:-none set}"
   [[ -f "${KCV_LIB_DIR}/korvarix-policy.json" ]] && echo "policy: built ($(state_get policy_version))"
