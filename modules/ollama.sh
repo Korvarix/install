@@ -131,138 +131,191 @@ ollama_pull() {
 #                approximate and watch the pull output.
 # RAM guidance vs this cluster: 128GB nodes, OLLAMA_MAX_LOADED bounds how many
 # models co-reside in memory. Q2_K/Q4_K_M quants are the CPU sweet spot.
-# Format: slug|Label|~N GB RAM|description|section(O=official,C=community)
+# Format: slug|Label|~N GB RAM|description|section(O=official,C=community)|category
+#   Categories drive the paged picker: CHAT REASON CODE RP UNC SMALL.
 
 # --- OFFICIAL (ollama.com/library, verified CPU-runnable sizes) ---
 OLLAMA_CATALOG=(
-  "qwen3:4b|Qwen 3 4B|~3|Google-rival small, fast|O"
-  "qwen3:8b|Qwen 3 8B|~5|all-round chat + thinking, fast|O"
-  "qwen3:14b|Qwen 3 14B|~9|stronger reasoning tier|O"
-  "qwen3:30b-a3b|Qwen 3 30B-A3B (MoE)|~19|MoE - only 3B active params, near-8B speed at 30B quality|O"
-  "qwen3:32b|Qwen 3 32B|~20|dense heavy reasoning|O"
-  "qwen2.5:3b|Qwen 2.5 3B|~2|tiny all-rounder|O"
-  "qwen2.5:7b|Qwen 2.5 7B|~5|proven all-rounder|O"
-  "qwen2.5:14b|Qwen 2.5 14B|~9|strong reasoning|O"
-  "qwen2.5:32b|Qwen 2.5 32B|~20|heavy reasoning|O"
-  "qwen2.5-coder:7b|Qwen 2.5 Coder 7B|~5|code generation/completion|O"
-  "qwen2.5-coder:14b|Qwen 2.5 Coder 14B|~9|stronger code model|O"
-  "qwen2.5-coder:32b|Qwen 2.5 Coder 32B|~20|heavy code model|O"
-  "llama3.1:8b|Llama 3.1 8B|~5|Meta all-rounder, huge ecosystem|O"
-  "llama3.1:70b|Llama 3.1 70B|~40|top dense quality, slow on CPU|O"
-  "llama3.2:3b|Llama 3.2 3B|~2|Meta small|O"
-  "llama3.3:70b|Llama 3.3 70B|~40|newer 70B, 405B-class output|O"
-  "mistral:7b|Mistral 7B|~4|small + fast|O"
-  "mistral-nemo|Mistral Nemo 12B|~7|128k context, multilingual|O"
-  "mistral-small:22b|Mistral Small 22B|~13|strong mid-tier|O"
-  "gemma3:1b|Gemma 3 1B|~1|Google, featherweight|O"
-  "gemma3:4b|Gemma 3 4B|~3|Google light, vision-capable|O"
-  "gemma3:12b|Gemma 3 12B|~8|Google mid-tier|O"
-  "gemma3:27b|Gemma 3 27B|~17|Google heavy|O"
-  "gemma3n:e2b|Gemma 3n E2B|~2|efficient everyday-device model|O"
-  "gemma3n:e4b|Gemma 3n E4B|~3|efficient everyday-device model|O"
-  "phi4:14b|Phi-4 14B|~9|Microsoft reasoning|O"
-  "phi4-reasoning:14b|Phi-4 Reasoning 14B|~9|complex reasoning focused|O"
-  "phi4-mini:3.8b|Phi-4 Mini 3.8B|~2.5|multilingual + function calling|O"
-  "phi3:3.8b|Phi-3 Mini 3.8B|~2.5|Microsoft lightweight|O"
-  "deepseek-r1:8b|DeepSeek R1 8B|~5|reasoning, thinks step-by-step|O"
-  "deepseek-r1:14b|DeepSeek R1 14B|~9|deeper reasoning|O"
-  "deepseek-r1:32b|DeepSeek R1 32B|~20|deep reasoning, slower|O"
-  "qwq:32b|QwQ 32B|~20|Qwen reasoning model|O"
-  "granite3.1-moe:3b|Granite 3.1 MoE 3B|~2|IBM low-latency MoE|O"
-  "granite3.3:8b|Granite 3.3 8B|~5|IBM 128k context|O"
-  "granite4:3b|Granite 4 3B|~2|IBM enterprise tool-calling|O"
-  "nemotron-mini:4b|Nemotron Mini 4B|~3|NVIDIA roleplay/RAG/function-calling|O"
-  "olmo2:7b|OLMo 2 7B|~4|AI2 fully-open model|O"
-  "smollm2:1.7b|SmolLM2 1.7B|~1.8|compact + tools|O"
-  "lfm2:24b|LFM2 24B|~14|on-device hybrid architecture|O"
-  "falcon3:7b|Falcon 3 7B|~4|TII science/math|O"
-  "command-r:35b|Command R 35B|~20|Cohere long-context RAG|O"
-  "glm4:9b|GLM-4 9B|~5.5|multilingual, Llama-3 competitive|O"
-  "yi:9b|Yi 1.5 9B|~5|bilingual strong|O"
-  "aya-expanse:8b|Aya Expanse 8B|~5|Cohere 23-language|O"
-  "gpt-oss:20b|GPT-OSS 20B|~12|OpenAI open-weight reasoning (local build)|O"
+  # all-round chat
+  "qwen3:4b|Qwen 3 4B|~3|Google-rival small, fast|O|CHAT"
+  "qwen3:8b|Qwen 3 8B|~5|all-round chat + thinking, fast|O|CHAT"
+  "qwen2.5:3b|Qwen 2.5 3B|~2|tiny all-rounder|O|CHAT"
+  "qwen2.5:7b|Qwen 2.5 7B|~5|proven all-rounder|O|CHAT"
+  "qwen2.5:14b|Qwen 2.5 14B|~9|strong general|O|CHAT"
+  "llama3.1:8b|Llama 3.1 8B|~5|Meta all-rounder, huge ecosystem|O|CHAT"
+  "llama3.1:70b|Llama 3.1 70B|~40|top dense quality, slow on CPU|O|CHAT"
+  "llama3.2:3b|Llama 3.2 3B|~2|Meta small|O|CHAT"
+  "llama3.3:70b|Llama 3.3 70B|~40|newer 70B, 405B-class output|O|CHAT"
+  "mistral:7b|Mistral 7B|~4|small + fast|O|CHAT"
+  "mistral-nemo|Mistral Nemo 12B|~7|128k context, multilingual|O|CHAT"
+  "mistral-small:22b|Mistral Small 22B|~13|strong mid-tier|O|CHAT"
+  "gemma3:12b|Gemma 3 12B|~8|Google mid-tier|O|CHAT"
+  "gemma3:27b|Gemma 3 27B|~17|Google heavy|O|CHAT"
+  "phi4-mini:3.8b|Phi-4 Mini 3.8B|~2.5|multilingual + function calling|O|CHAT"
+  "phi3:3.8b|Phi-3 Mini 3.8B|~2.5|Microsoft lightweight|O|CHAT"
+  "granite3.3:8b|Granite 3.3 8B|~5|IBM 128k context|O|CHAT"
+  "olmo2:7b|OLMo 2 7B|~4|AI2 fully-open model|O|CHAT"
+  "lfm2:24b|LFM2 24B|~14|on-device hybrid architecture|O|CHAT"
+  "command-r:35b|Command R 35B|~20|Cohere long-context RAG|O|CHAT"
+  "glm4:9b|GLM-4 9B|~5.5|multilingual, Llama-3 competitive|O|CHAT"
+  "yi:9b|Yi 1.5 9B|~5|bilingual strong|O|CHAT"
+  "aya-expanse:8b|Aya Expanse 8B|~5|Cohere 23-language|O|CHAT"
+  # reasoning
+  "qwen3:14b|Qwen 3 14B|~9|stronger reasoning tier|O|REASON"
+  "qwen3:30b-a3b|Qwen 3 30B-A3B (MoE)|~19|MoE - only 3B active params, near-8B speed at 30B quality|O|REASON"
+  "qwen3:32b|Qwen 3 32B|~20|dense heavy reasoning|O|REASON"
+  "qwen2.5:32b|Qwen 2.5 32B|~20|heavy reasoning|O|REASON"
+  "phi4:14b|Phi-4 14B|~9|Microsoft reasoning|O|REASON"
+  "phi4-reasoning:14b|Phi-4 Reasoning 14B|~9|complex reasoning focused|O|REASON"
+  "deepseek-r1:8b|DeepSeek R1 8B|~5|reasoning, thinks step-by-step|O|REASON"
+  "deepseek-r1:14b|DeepSeek R1 14B|~9|deeper reasoning|O|REASON"
+  "deepseek-r1:32b|DeepSeek R1 32B|~20|deep reasoning, slower|O|REASON"
+  "qwq:32b|QwQ 32B|~20|Qwen reasoning model|O|REASON"
+  "falcon3:7b|Falcon 3 7B|~4|TII science/math|O|REASON"
+  "gpt-oss:20b|GPT-OSS 20B|~12|OpenAI open-weight reasoning (local build)|O|REASON"
+  # coding
+  "qwen2.5-coder:7b|Qwen 2.5 Coder 7B|~5|code generation/completion|O|CODE"
+  "qwen2.5-coder:14b|Qwen 2.5 Coder 14B|~9|stronger code model|O|CODE"
+  "qwen2.5-coder:32b|Qwen 2.5 Coder 32B|~20|heavy code model|O|CODE"
+  "granite4:3b|Granite 4 3B|~2|IBM enterprise tool-calling|O|CODE"
+  # lightweight
+  "gemma3:1b|Gemma 3 1B|~1|Google, featherweight|O|SMALL"
+  "gemma3:4b|Gemma 3 4B|~3|Google light, vision-capable|O|SMALL"
+  "gemma3n:e2b|Gemma 3n E2B|~2|efficient everyday-device model|O|SMALL"
+  "gemma3n:e4b|Gemma 3n E4B|~3|efficient everyday-device model|O|SMALL"
+  "granite3.1-moe:3b|Granite 3.1 MoE 3B|~2|IBM low-latency MoE|O|SMALL"
+  "smollm2:1.7b|SmolLM2 1.7B|~1.8|compact + tools|O|SMALL"
 
-  # --- COMMUNITY (publisher uploads - fine-tunes for roleplay/story/code) ---
-  "oroboros-labs/claude-fable5|Claude Fable 5|~9.8|oroboros-labs Claude fine-tune, Q2_K, 256k ctx - your pick|C"
-  "oroboros-labs/claude-fable5-undecillion|Claude Fable 5 Undecillion|~12|oroboros-labs deep-reasoning variant, Q4_K_M, 1M ctx|C"
-  "oroboros-labs/claude-sonnet-7-undecillion|Claude Sonnet 7 Undecillion|~12|oroboros-labs Sonnet-line fine-tune, tools|C"
-  "oroboros-labs/claude-fable5u|Claude Fable 5U|~9.8|oroboros-labs fast daily-driver variant, Q2_K|C"
-  "R4C3R/qwen3-8b-heretic|R4C3R Qwen3-8B Heretic|~5|uncensored creative writing/roleplay fine-tune|C"
-  "R4C3R/gemma-3-12b-it-heretic|R4C3R Gemma-3-12B Heretic|~8|uncensored creative writing fine-tune|C"
-  "R4C3R/mistral-7b-instruct-v0.3-heretic|R4C3R Mistral-7B Heretic|~4|uncensored creative writing fine-tune|C"
-  "orcarouter/Qwen3.8-27B-Uncensored|Qwen3.8-27B Uncensored|~17|tensor-level abliteration, vision+tools+thinking, 262k ctx|C"
-  "LESSTHANSUPER/DARKEST_UNIVERSE-Mistral_Nemo-29b|Darkest Universe 29B|~17|DavidAU storytelling, uncensored|C"
-  "LESSTHANSUPER/RP-INK-Qwen2.5-32b|RP-INK Qwen2.5 32B|~20|highly-rated roleplay fine-tune|C"
-  "LESSTHANSUPER/DARK_PLANET_REBEL_FURY-Llama3-25b|Dark Planet Rebel Fury 25B|~15|storytelling MoE|C"
-  "RoseRudolph/rudy-nemo-12b-v1|Rudy Nemo 12B|~7|NeMo/Rocinante merge, long-context roleplay|C"
-  "voytas26/openclaw-oss-20b-deterministic|OpenClaw OSS 20B|~12|deterministic tool-aware gpt-oss for agents|C"
-  "dolphin3:8b|Dolphin 3.0 8B|~5|Eric Hartford instruct uncensored|C"
-  "dolphin-mistral:7b|Dolphin Mistral 7B|~4|uncensored coding|C"
-  "dolphin-mixtral:8x7b|Dolphin Mixtral 8x7B|~26|uncensored MoE coding|C"
-  "hermes3:8b|Hermes 3 8B|~5|Nous Research flagship tune|C"
-  "wizard-vicuna-uncensored:7b|Wizard Vicuna Unc. 7B|~4|classic uncensored chat|C"
-  "llama2-uncensored:7b|Llama 2 Uncensored 7B|~4|classic uncensored chat|C"
+  # --- COMMUNITY (publisher uploads - fine-tunes) ---
+  # roleplay & story
+  "oroboros-labs/claude-fable5|Claude Fable 5|~9.8|oroboros-labs Claude fine-tune, Q2_K, 256k ctx - your pick|C|RP"
+  "oroboros-labs/claude-fable5-undecillion|Claude Fable 5 Undecillion|~12|oroboros-labs deep-reasoning variant, Q4_K_M, 1M ctx|C|RP"
+  "oroboros-labs/claude-sonnet-7-undecillion|Claude Sonnet 7 Undecillion|~12|oroboros-labs Sonnet-line fine-tune, tools|C|RP"
+  "oroboros-labs/claude-fable5u|Claude Fable 5U|~9.8|oroboros-labs fast daily-driver variant, Q2_K|C|RP"
+  "LESSTHANSUPER/DARKEST_UNIVERSE-Mistral_Nemo-29b|Darkest Universe 29B|~17|DavidAU storytelling, uncensored|C|RP"
+  "LESSTHANSUPER/RP-INK-Qwen2.5-32b|RP-INK Qwen2.5 32B|~20|highly-rated roleplay fine-tune|C|RP"
+  "LESSTHANSUPER/DARK_PLANET_REBEL_FURY-Llama3-25b|Dark Planet Rebel Fury 25B|~15|storytelling MoE|C|RP"
+  "RoseRudolph/rudy-nemo-12b-v1|Rudy Nemo 12B|~7|NeMo/Rocinante merge, long-context roleplay|C|RP"
+  "nemotron-mini:4b|Nemotron Mini 4B|~3|NVIDIA roleplay/RAG/function-calling|O|RP"
+  # uncensored
+  "R4C3R/qwen3-8b-heretic|R4C3R Qwen3-8B Heretic|~5|uncensored creative writing/roleplay fine-tune|C|UNC"
+  "R4C3R/gemma-3-12b-it-heretic|R4C3R Gemma-3-12B Heretic|~8|uncensored creative writing fine-tune|C|UNC"
+  "R4C3R/mistral-7b-instruct-v0.3-heretic|R4C3R Mistral-7B Heretic|~4|uncensored creative writing fine-tune|C|UNC"
+  "orcarouter/Qwen3.8-27B-Uncensored|Qwen3.8-27B Uncensored|~17|tensor-level abliteration, vision+tools+thinking, 262k ctx|C|UNC"
+  "dolphin3:8b|Dolphin 3.0 8B|~5|Eric Hartford instruct uncensored|C|UNC"
+  "dolphin-mistral:7b|Dolphin Mistral 7B|~4|uncensored coding|C|UNC"
+  "dolphin-mixtral:8x7b|Dolphin Mixtral 8x7B|~26|uncensored MoE coding|C|UNC"
+  "wizard-vicuna-uncensored:7b|Wizard Vicuna Unc. 7B|~4|classic uncensored chat|C|UNC"
+  "llama2-uncensored:7b|Llama 2 Uncensored 7B|~4|classic uncensored chat|C|UNC"
+  # coding
+  "voytas26/openclaw-oss-20b-deterministic|OpenClaw OSS 20B|~12|deterministic tool-aware gpt-oss for agents|C|CODE"
+  # chat
+  "hermes3:8b|Hermes 3 8B|~5|Nous Research flagship tune|C|CHAT"
 )
 
 # rough GB number from the catalog RAM label
 catalog_ram_gb() { tr -dc '0-9.' <<<"$1" | head -c 4; }
 
-# print one catalog section; returns the next global index
-catalog_print_section() {
-  local sec="$1" idx="$2" entry _slug _label ram _desc s
-  for entry in "${OLLAMA_CATALOG[@]}"; do
-    IFS='|' read -r _slug _label ram _desc s <<<"$entry"
-    [[ "$s" == "$sec" ]] || continue
-    printf '  %2d) %-46s %-8s %s\n' "$idx" "$_slug" "$ram GB" "$_desc"
-    idx=$((idx+1))
-  done
-  echo "$idx"
-}
+# paged model picker: category upfront, 9 rows per page.
+# Numbers are GLOBAL across the whole browse session (a pick on page 1 keeps
+# its number on page 7), so selection stays unambiguous while paging.
+CATALOG_CATEGORIES=(CHAT REASON CODE RP UNC SMALL)
+CATALOG_PAGES=9
 
 ollama_pick_models() {
   require_root
   echo
   log "model catalog - CPU-friendly picks - current allowlist: ${MODELS_ALLOWLIST:-none}"
-  echo
-  printf '\033[1;35m== OFFICIAL - ollama.com/library (vendor-maintained) ==\033[0m\n'
-  local next
-  next="$(catalog_print_section O 1)"
-  echo
-  printf '\033[1;35m== COMMUNITY - publisher uploads (fine-tunes: roleplay/story/uncensored) ==\033[0m\n'
-  catalog_print_section C "$next" >/dev/null
-  echo
-  printf 'pick models by number (e.g. "1 8 42"), "all", "official", "community", or enter to cancel: '
-  local reply
-  read -r reply || die "input failed"
-  reply="$(xargs <<<"$reply")"
-  [[ -n "$reply" ]] || { warn "cancelled - allowlist unchanged"; return 1; }
-
-  local picks=()
-  if [[ "$reply" == "all" ]]; then
-    for entry in "${OLLAMA_CATALOG[@]}"; do picks+=("${entry%%|*}"); done
-  elif [[ "$reply" == "official" ]]; then
-    for entry in "${OLLAMA_CATALOG[@]}"; do
-      IFS='|' read -r slug _label _ram _desc s <<<"$entry"
-      [[ "$s" == "O" ]] && picks+=("$slug")
-    done
-  elif [[ "$reply" == "community" ]]; then
-    for entry in "${OLLAMA_CATALOG[@]}"; do
-      IFS='|' read -r slug _label _ram _desc s <<<"$entry"
-      [[ "$s" == "C" ]] && picks+=("$slug")
-    done
+  local picks=() sel
+  sel="$(ollama_pick_browse)" || { warn "cancelled - allowlist unchanged"; return 1; }
+  # resolve selection (numbers = global indices; keywords pass through)
+  if [[ "$sel" == "@ALL" ]]; then
+    local e
+    for e in "${OLLAMA_CATALOG[@]}"; do picks+=("${e%%|*}"); done
   else
     local n
-    for n in $reply; do
-      [[ "$n" =~ ^[0-9]+$ ]] || { warn "ignoring non-number: $n"; continue; }
-      (( n >= 1 && n <= ${#OLLAMA_CATALOG[@]} )) || { warn "ignoring out-of-range: $n"; continue; }
+    for n in $sel; do
+      [[ "$n" =~ ^[0-9]+$ ]] || continue
+      (( n >= 1 && n <= ${#OLLAMA_CATALOG[@]} )) || continue
       picks+=("${OLLAMA_CATALOG[$((n-1))]%%|*}")
     done
   fi
-  # de-dup + merge with existing allowlist
+  [[ ${#picks[@]} -gt 0 ]] || { warn "nothing selected - allowlist unchanged"; return 1; }
+  _picks_apply "${picks[@]}"
+}
+
+# browse UI: returns "NUM NUM ..." on stdout, or "@ALL"; return 1 = cancel
+ollama_pick_browse() {
+  local page=1 total=${#OLLAMA_CATALOG[@]} pages=$(( (total + CATALOG_PAGES - 1) / CATALOG_PAGES ))
+  local chosen=() reply n token
+  while true; do
+    echo
+    printf '\033[1;35m== models  page %d/%d  (pick by number - numbers are global) ==\033[0m\n' "$page" "$pages"
+    local i start end
+    start=$(( (page-1)*CATALOG_PAGES + 1 ))
+    end=$(( start + CATALOG_PAGES - 1 ))
+    for ((i=start; i<=end && i<=total; i++)); do
+      local entry slug label ram desc sec cat
+      entry="${OLLAMA_CATALOG[$((i-1))]}"
+      IFS='|' read -r slug label ram desc sec cat <<<"$entry"
+      local tag="  "
+      local c
+      for c in "${chosen[@]}"; do [[ "$c" == "$i" ]] && tag="**"; done
+      printf '  %s %2d) [%-7s] %-46s %-8s %s\n' "$tag" "$i" "$cat" "$slug" "$ram GB" "$desc"
+    done
+    echo
+    printf '  selected: %s\n' "${chosen[*]:-none}"
+    echo "  enter: numbers to TOGGLE (re-enter = remove) | n/p: next/prev page | <cat>: jump"
+    echo "  categories: ${CATALOG_CATEGORIES[*]}"
+    echo "  all: everything | done: keep selection | x: cancel"
+    read -r -e -p "> " reply || return 1
+    reply="$(xargs <<<"$reply")"
+    case "$reply" in
+      x|X|q|quit) return 1 ;;
+      done|d|"")
+        [[ ${#chosen[@]} -gt 0 ]] || { warn "nothing selected yet"; continue; }
+        printf '%s\n' "${chosen[*]}"
+        return 0 ;;
+      all|ALL) printf '@ALL\n'; return 0 ;;
+      n|next) (( page < pages )) && page=$((page+1)) ;;
+      p|prev) (( page > 1 )) && page=$((page-1)) ;;
+      *)
+        # category jump and/or number picks, possibly mixed ("RP 3 5")
+        local only_nums=1 had_jump=0
+        for token in $reply; do
+          if [[ "$token" != [0-9]* && "${CATALOG_CATEGORIES[*]}" == *" $token "* ]]; then
+            had_jump=1; only_nums=0
+            # jump to the page holding this category's FIRST entry
+            local e _s _c ei=0
+            for e in "${OLLAMA_CATALOG[@]}"; do
+              IFS='|' read -r _ _ _ _ _s _c <<<"$e"
+              [[ "$_c" == "$token" ]] && break
+              ei=$((ei+1))
+            done
+            page=$(( ei / CATALOG_PAGES + 1 ))
+          elif [[ "$token" =~ ^[0-9]+$ ]] && (( token >= 1 && token <= total )); then
+            only_nums=0
+            # toggle: pick once to add, again to remove
+            local have=0 keep=() c
+            for c in "${chosen[@]}"; do
+              [[ "$c" == "$token" ]] && { have=1; continue; }
+              keep+=("$c")
+            done
+            if (( ! have )); then chosen+=("$token"); else chosen=("${keep[@]}"); fi
+          fi
+        done
+        (( had_jump )) || (( only_nums )) && warn "no valid numbers/categories in: $reply"
+        ;;
+    esac
+  done
+}
+
+# shared tail of the picker: merge picks into the allowlist, write, pull
+_picks_apply() {
   local merged="${MODELS_ALLOWLIST:-}"
   local seen=" $merged "
   local m
-  for m in "${picks[@]}"; do
+  for m in "$@"; do
     [[ "$seen" == *" $m "* ]] && continue
     merged="$merged $m"
     seen="$seen$m "
