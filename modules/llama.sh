@@ -7,6 +7,42 @@ LLAMA_DIR="${KCV_LIB_DIR}/llama.cpp"
 RPC_PORT="${RPC_PORT:-50052}"
 LLAMA_PORT="${LLAMA_PORT:-8080}"
 
+# llama.cpp renamed its targets/binary names across releases (pre-0.4:
+# "rpc-server"; 0.4.x: "llama-rpc-server"). Hard-coding either breaks on the
+# other, so resolve both the cmake target AND the produced binary at runtime.
+_llama_pick() {
+  # first existing candidate wins
+  local c
+  for c in "$@"; do
+    [[ -n "$c" ]] && return 0
+  done
+  return 1
+}
+
+_llama_rpc_target() {
+  local t
+  t="$(cmake --build "$LLAMA_DIR/build" --target help 2>/dev/null | grep -oE '[a-z0-9_-]*rpc-server' | head -1)"
+  _llama_pick "$t" rpc-server
+}
+
+_llama_serve_target() {
+  local t
+  t="$(cmake --build "$LLAMA_DIR/build" --target help 2>/dev/null | grep -oE '[a-z0-9_-]*llama-server' | head -1)"
+  _llama_pick "$t" llama-server
+}
+
+_llama_rpc_bin() {
+  local b
+  b="$(ls "$LLAMA_DIR"/build/bin/*rpc-server 2>/dev/null | head -1)"
+  _llama_pick "$b" "$LLAMA_DIR/build/bin/rpc-server"
+}
+
+_llama_serve_bin() {
+  local b
+  b="$(ls "$LLAMA_DIR"/build/bin/*llama-server 2>/dev/null | grep -v rpc | head -1)"
+  _llama_pick "$b" "$LLAMA_DIR/build/bin/llama-server"
+}
+
 llama_build() {
   require_root
   log "llama: building llama.cpp (ref: ${LLAMA_CPP_REF:-HEAD})"
@@ -22,7 +58,10 @@ llama_build() {
   local jobs
   jobs="$(free -m | awk '/Mem:/{m=$2} END{printf "%d", m/1100}')"
   (( jobs < 1 )) && jobs=1
-  local out rc
+  local out rc rpc_tgt serve_tgt
+  rpc_tgt="$(_llama_rpc_target)"
+  serve_tgt="$(_llama_serve_target)"
+  log "llama: targets: $rpc_tgt + $serve_tgt"
   out="$(
     cd "$LLAMA_DIR" || exit 10
     git fetch --tags --force 2>/dev/null || true
@@ -30,8 +69,7 @@ llama_build() {
       git checkout "$LLAMA_CPP_REF" || exit 10
     fi
     cmake -B build -DGGML_RPC=ON -DGGML_NATIVE=ON -DCMAKE_BUILD_TYPE=Release 2>&1 || exit 10
-    # explicit targets: the default ALL set may not include the RPC backend
-    cmake --build build --target rpc-server llama-server -j"$jobs" 2>&1 || exit 11
+    cmake --build build --target "$rpc_tgt" "$serve_tgt" -j"$jobs" 2>&1 || exit 11
   )" && rc=0 || rc=$?
   if (( rc != 0 )); then
     # cmake noise is enormous - show only the tail where the real error lives
@@ -39,16 +77,16 @@ llama_build() {
     (( rc == 10 )) && die "cmake configure failed - output above"
     die "build failed - output above"
   fi
-  local b
-  for b in rpc-server llama-server; do
-    [[ -x "$LLAMA_DIR/build/bin/$b" ]] || die "build did not produce $b"
-  done
+  [[ -x "$(_llama_rpc_bin)" ]] || die "build did not produce rpc-server ($rpc_tgt)"
+  [[ -x "$(_llama_serve_bin)" ]] || die "build did not produce llama-server ($serve_tgt)"
   ok "llama: build complete ($(nproc) cores, $jobs jobs)"
 }
 
 rpc_start() {
   require_root
-  [[ -x "$LLAMA_DIR/build/bin/rpc-server" ]] || { llama_build; }
+  local rpc_bin
+  rpc_bin="$(_llama_rpc_bin)"
+  [[ -x "$rpc_bin" ]] || { llama_build; rpc_bin="$(_llama_rpc_bin)"; }
   [[ -n "${NODE_VPN_IP:-}" ]] || die "NODE_VPN_IP empty in $KCV_ENV_FILE (join the VPN first)"
   log "rpc: starting rpc-server on $NODE_VPN_IP:$RPC_PORT (VPN-only, no auth - never public)"
   systemctl stop "${KCV_PREFIX}-rpc-server" 2>/dev/null || true
@@ -58,7 +96,7 @@ After=network-online.target wg-quick@wg0.service
 Wants=wg-quick@wg0.service
 [Service]
 Type=simple
-ExecStart=$LLAMA_DIR/build/bin/rpc-server -p $RPC_PORT -H $NODE_VPN_IP
+ExecStart=$rpc_bin -p $RPC_PORT -H $NODE_VPN_IP
 Restart=always
 RestartSec=5
 [Install]
@@ -89,7 +127,9 @@ rpc_stop() {
 
 llama_server_start() {
   require_root
-  [[ -x "$LLAMA_DIR/build/bin/llama-server" ]] || { llama_build; }
+  local serve_bin
+  serve_bin="$(_llama_serve_bin)"
+  [[ -x "$serve_bin" ]] || { llama_build; serve_bin="$(_llama_serve_bin)"; }
   [[ -n "${MODEL_FILE:-}" ]] || die "MODEL_FILE empty in $KCV_ENV_FILE (gguf filename inside ${MODELS_DIR:-/data/models})"
   local model="${MODELS_DIR:-/data/models}/$MODEL_FILE"
   [[ -f "$model" ]] || die "model not found: $model"
@@ -112,7 +152,7 @@ After=network-online.target wg-quick@wg0.service
 Wants=wg-quick@wg0.service
 [Service]
 Type=simple
-ExecStart=$LLAMA_DIR/build/bin/llama-server -m $model $rpc_args -ngl 0 -c ${N_CTX:-8192} ${N_THREADS:+-t $N_THREADS} --host $bind --port $LLAMA_PORT
+ExecStart=$serve_bin -m $model $rpc_args -ngl 0 -c ${N_CTX:-8192} ${N_THREADS:+-t $N_THREADS} --host $bind --port $LLAMA_PORT
 Restart=always
 RestartSec=5
 Environment=LD_LIBRARY_PATH=$LLAMA_DIR/build/bin
