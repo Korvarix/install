@@ -110,10 +110,19 @@ WantedBy=multi-user.target"
 ollama_pull() {
   require_root
   [[ -n "${MODELS_ALLOWLIST:-}" ]] || die "MODELS_ALLOWLIST empty in $KCV_ENV_FILE (e.g. 'qwen2.5:7b llama3.1:8b')"
+  # ensure the binary exists: picking models before install left ollama_dir
+  # empty and produced "/bin/ollama: No such file or directory"
+  local dir
+  dir="$(state_get ollama_dir)"
+  if [[ -z "$dir" || ! -x "$dir/bin/ollama" ]]; then
+    log "ollama: binary missing - installing first"
+    ollama_install
+    dir="$(state_get ollama_dir)"
+  fi
   local m
   for m in $MODELS_ALLOWLIST; do
     log "ollama: ensuring $m (this can take a while on first pull)"
-    "$(state_get ollama_dir)/bin/ollama" pull "$m" || warn "pull failed: $m (check disk space)"
+    "$dir/bin/ollama" pull "$m" || warn "pull failed: $m (check disk space)"
   done
   ok "ollama: allowlist models present"
 }
