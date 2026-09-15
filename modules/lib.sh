@@ -189,6 +189,9 @@ svc_write() {
   printf '%s\n' "$content" > "/etc/systemd/system/${KCV_PREFIX}-${name}.service"
   systemctl daemon-reload
   systemctl enable "${KCV_PREFIX}-${name}" >/dev/null 2>&1 || true
+  # callers write-then-check: a written unit must actually be RUNNING, or the
+  # is-active check downstream dies with an empty journal (never started)
+  systemctl restart "${KCV_PREFIX}-${name}"
 }
 
 svc_active() { systemctl is-active --quiet "${KCV_PREFIX}-$1" 2>/dev/null; }
