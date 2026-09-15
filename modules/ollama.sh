@@ -78,6 +78,10 @@ Group=$owner
 ExecStart=$dir/bin/ollama serve
 Environment=OLLAMA_HOST=${OLLAMA_BIND:-127.0.0.1}:${OLLAMA_PORT:-11434}
 Environment=OLLAMA_MODELS=${models_dir}
+# HOME inside the sandbox: the daemon resolves its identity key at
+# $HOME/.ollama; the passwd home (/home/korvarix-ollama) is BLOCKED by
+# ProtectHome=true below, so point HOME at the writable sandbox dir
+Environment=HOME=${dir}
 Environment=OLLAMA_NUM_PARALLEL=${OLLAMA_NUM_PARALLEL:-2}
 Environment=OLLAMA_MAX_LOADED_MODELS=${OLLAMA_MAX_LOADED:-2}
 Environment=OLLAMA_KEEP_ALIVE=${OLLAMA_KEEP_ALIVE:-10m}
