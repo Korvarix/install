@@ -28,6 +28,10 @@ klm_fetch() {
   fi
   # the deployable folder lives at install/korvarix-llm in the repo
   [[ -f "$KLM_DIR/korvarix-llm/install.sh" ]] || die "$KLM_DIR/korvarix-llm/install.sh not found - repo layout changed?"
+  # exec bits survive a clone only if the source repo committed them - this
+  # one doesn't, so run install.sh via bash (and mark it anyway for its own
+  # internal ./install.sh re-invocations, e.g. 'check' spawning hooks)
+  chmod +x "$KLM_DIR/korvarix-llm/install.sh" 2>/dev/null || true
 }
 
 # seed cluster endpoints into the frontend's .env BEFORE first container boot
@@ -64,22 +68,22 @@ klm_install() {
   docker info >/dev/null 2>&1 || die "docker not reachable - daemon down? (sudo usermod -aG docker \$USER)"
   klm_wire_cluster
   log "korvarix-llm: install/update"
-  ( cd "$KLM_DIR/korvarix-llm" && ./install.sh )
-  ( cd "$KLM_DIR/korvarix-llm" && ./install.sh check ) || warn "check reported warnings above"
+  ( cd "$KLM_DIR/korvarix-llm" && bash install.sh ) || die "korvarix-llm install failed"
+  ( cd "$KLM_DIR/korvarix-llm" && bash install.sh check ) || warn "check reported warnings above"
 }
 
 klm_gate() {
   require_root
   [[ -f "$KLM_DIR/korvarix-llm/install.sh" ]] || die "frontend not fetched yet - run korvarix-llm install first"
   log "korvarix-llm: SSO gate (needs LLM_SSO_KEY + OPEN_WEBUI_API_KEY afterwards)"
-  ( cd "$KLM_DIR/korvarix-llm" && ./install.sh gate )
+  ( cd "$KLM_DIR/korvarix-llm" && bash install.sh gate )
 }
 
 klm_nginx() {
   require_root
   [[ -f "$KLM_DIR/korvarix-llm/install.sh" ]] || die "frontend not fetched yet - run korvarix-llm install first"
   log "korvarix-llm: nginx proxy + Let's Encrypt (LLM_DOMAIN must be set in its .env)"
-  ( cd "$KLM_DIR/korvarix-llm" && ./install.sh nginx )
+  ( cd "$KLM_DIR/korvarix-llm" && bash install.sh nginx )
 }
 
 klm_status() {
@@ -90,7 +94,7 @@ klm_status() {
   fi
   docker ps --filter "name=^korvarix-llm$" --format '  container: running ({{.Status}})'
   docker ps --filter "name=^korvarix-llm-gate$" --format '  gate:      running ({{.Status}})'
-  ( cd "$dir" && ./install.sh status )
+  ( cd "$dir" && bash install.sh status )
 }
 
 klm_menu() {
