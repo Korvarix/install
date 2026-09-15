@@ -106,13 +106,20 @@ vpn_hub_setup() {
 [Interface]
 PrivateKey = $priv
 ListenPort = $WG_PORT
-Address = ${WG_NET}.1/24
+Address = ${WG_NET%.*}.1/${WG_MASK}
 
 # peers are appended by 'vpn issue' - do not edit by hand
 EOF
     chmod 600 "$WG_HUB_CONF"
   else
-    warn "hub config exists - keeping it ($WG_HUB_CONF)"
+    # self-repair: older releases wrote a 5-octet Address (10.8.0.0.1/24) that
+    # makes wg-quick fail forever with "inet prefix is expected" - fix in place
+    if grep -qE '^Address[[:space:]]*=[[:space:]]*[0-9]+(\.[0-9]+){4}' "$WG_HUB_CONF"; then
+      warn "repairing malformed Address line in $WG_HUB_CONF (5-octet bug)"
+      sed -i -E "s|^Address[[:space:]]*=.*|Address = ${WG_NET%.*}.1/${WG_MASK}|" "$WG_HUB_CONF"
+    else
+      warn "hub config exists - keeping it ($WG_HUB_CONF)"
+    fi
   fi
 
   wg_ip_forward_on
@@ -168,7 +175,7 @@ EOF
     echo ""
     echo "[Peer]"
     echo "PublicKey = $(_wg_hub_pubkey)"
-    echo "Endpoint = $(state_get VPN_PUBLIC_IP):$WG_PORT"
+    echo "Endpoint = ${VPN_PUBLIC_IP}:$WG_PORT"
     echo "AllowedIPs = ${WG_NET}/${WG_MASK}"
     echo "PersistentKeepalive = 25"
   } > "$out/$name.conf"
