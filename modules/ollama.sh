@@ -250,10 +250,10 @@ ollama_pick_browse() {
   # separate line: a single `local a=1 b=$((a+1))` expands $a BEFORE a is
   # assigned, which dies under set -u ("total: unbound variable")
   local pages=$(( (total + CATALOG_PAGES - 1) / CATALOG_PAGES ))
-  local chosen=() reply n token
+  local chosen=() reply token
   while true; do
     echo
-    printf '\033[1;35m== models  page %d/%d  (pick by number - numbers are global) ==\033[0m\n' "$page" "$pages"
+    printf '\033[1;35m== models  page %d/%d ==\033[0m\n' "$page" "$pages"
     local i start end
     start=$(( (page-1)*CATALOG_PAGES + 1 ))
     end=$(( start + CATALOG_PAGES - 1 ))
@@ -261,33 +261,34 @@ ollama_pick_browse() {
       local entry slug label ram desc sec cat
       entry="${OLLAMA_CATALOG[$((i-1))]}"
       IFS='|' read -r slug label ram desc sec cat <<<"$entry"
-      local tag="  "
+      local tag=" "
       local c
-      for c in "${chosen[@]}"; do [[ "$c" == "$i" ]] && tag="**"; done
-      printf '  %s %2d) [%-7s] %-46s %-8s %s\n' "$tag" "$i" "$cat" "$slug" "$ram GB" "$desc"
+      for c in "${chosen[@]}"; do [[ "$c" == "$i" ]] && tag="*"; done
+      printf ' %s%2d) [%-7s] %-46s %-8s %s\n' "$tag" "$i" "$cat" "$slug" "$ram GB" "$desc"
     done
     echo
-    printf '  selected: %s\n' "${chosen[*]:-none}"
-    echo "  enter: numbers to TOGGLE (re-enter = remove) | n/p: next/prev page | <cat>: jump"
-    echo "  categories: ${CATALOG_CATEGORIES[*]}"
-    echo "  all: everything | done: keep selection | x: cancel"
+    if [[ ${#chosen[@]} -gt 0 ]]; then
+      local names="" c
+      for c in "${chosen[@]}"; do names+="${OLLAMA_CATALOG[$((c-1))]%%|*} "; done
+      printf '\033[1;32m  picked: %s\033[0m\n' "${names% }"
+    else
+      echo "  picked: (none yet)"
+    fi
+    echo "  type numbers to ADD | n/p page | category (CHAT REASON CODE RP UNC SMALL) | done | x cancel"
     read -r -e -p "> " reply || return 1
     reply="$(xargs <<<"$reply")"
     case "$reply" in
-      x|X|q|quit) return 1 ;;
-      done|d|"")
-        [[ ${#chosen[@]} -gt 0 ]] || { warn "nothing selected yet"; continue; }
-        printf '%s\n' "${chosen[*]}"
-        return 0 ;;
-      all|ALL) printf '@ALL\n'; return 0 ;;
-      n|next) (( page < pages )) && page=$((page+1)) ;;
-      p|prev) (( page > 1 )) && page=$((page-1)) ;;
+      x|X|0|q|quit) return 1 ;;
+      done|d) [[ ${#chosen[@]} -eq 0 ]] && { warn "nothing picked yet - type model numbers first"; continue; }
+              printf '%s\n' "${chosen[*]}"; return 0 ;;
+      all) printf '@ALL\n'; return 0 ;;
+      n|next) if (( page < pages )); then page=$((page+1)); else echo "  (last page)"; fi ;;
+      p|prev) if (( page > 1 )); then page=$((page-1)); else echo "  (first page)"; fi ;;
       *)
-        # category jump and/or number picks, possibly mixed ("RP 3 5")
-        local only_nums=1 had_jump=0
+        local had_any=0
         for token in $reply; do
           if [[ "$token" != [0-9]* && "${CATALOG_CATEGORIES[*]}" == *" $token "* ]]; then
-            had_jump=1; only_nums=0
+            had_any=1
             # jump to the page holding this category's FIRST entry
             local e _s _c ei=0
             for e in "${OLLAMA_CATALOG[@]}"; do
@@ -297,17 +298,16 @@ ollama_pick_browse() {
             done
             page=$(( ei / CATALOG_PAGES + 1 ))
           elif [[ "$token" =~ ^[0-9]+$ ]] && (( token >= 1 && token <= total )); then
-            only_nums=0
-            # toggle: pick once to add, again to remove
-            local have=0 keep=() c
-            for c in "${chosen[@]}"; do
-              [[ "$c" == "$token" ]] && { have=1; continue; }
-              keep+=("$c")
-            done
-            if (( ! have )); then chosen+=("$token"); else chosen=("${keep[@]}"); fi
+            had_any=1
+            # add-only, duplicate-safe
+            local have=0 c
+            for c in "${chosen[@]}"; do [[ "$c" == "$token" ]] && have=1; done
+            if (( ! have )); then chosen+=("$token"); fi
+          else
+            echo "  ? $token"
           fi
         done
-        (( had_jump )) || (( only_nums )) && warn "no valid numbers/categories in: $reply"
+        (( had_any )) || warn "nothing valid in: $reply"
         ;;
     esac
   done
