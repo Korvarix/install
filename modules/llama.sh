@@ -143,6 +143,37 @@ llama_model_set() {
   ok "MODEL_FILE=$mf set - use menu 4 -> start llama-server"
 }
 
+# download a .gguf straight from Hugging Face into MODELS_DIR and set it.
+# URL = the resolve URL of the file, e.g.:
+#   https://huggingface.co/bartowski/Meta-Llama-3.1-8B-Instruct-GGUF/resolve/main/Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf
+# Big files resume after interruption (curl -C -).
+llama_model_pull() {
+  require_root
+  kcv_require_env
+  local url="$1"
+  if [[ -z "$url" ]] && kcv_tty; then
+    read -r -p "Hugging Face resolve URL of the .gguf: " url || die "input failed"
+  fi
+  [[ "$url" =~ ^https://huggingface\.co/.+/resolve/.+ ]] || die "not a Hugging Face resolve URL: $url"
+  local fname dir out
+  fname="$(basename "${url%%\?*}")"
+  [[ "$fname" == *.gguf ]] || die "URL does not end in .gguf: $url"
+  dir="${MODELS_DIR:-/data/models}"
+  mkdir -p "$dir"
+  out="$dir/$fname"
+  if [[ -s "$out" ]]; then
+    warn "$fname already exists - keeping it"
+  else
+    log "pulling $fname -> $dir (resumable, Ctrl-C safe)"
+    curl -fL -C - --retry 5 --retry-delay 3 --max-time 7200 -o "${out}.part" "$url" \
+      || die "download failed - re-run the same command to resume"
+    mv "${out}.part" "$out"
+  fi
+  sed -i "s/^MODEL_FILE=.*/MODEL_FILE=$fname/" "$KCV_ENV_FILE" 2>/dev/null \
+    || printf 'MODEL_FILE=%s\n' "$fname" >> "$KCV_ENV_FILE"
+  ok "MODEL_FILE=$fname set - start it via menu 4 -> 3"
+}
+
 # add one donor node to the merged-RAM pool (manual flow confirmed: the
 # wizard prints the command; this runs ON THE MASTER afterwards).
 # Appends to RPC_PEERS, restarts llama-server, verifies every peer answers.
@@ -220,12 +251,13 @@ kcv_module_llama() {
     rpc-start)   rpc_start ;;
     rpc-stop)    rpc_stop ;;
     set-model)   shift; llama_model_set "$@" ;;
+    pull)        shift; llama_model_pull "$@" ;;
     add-peer)    shift; llama_add_peer "$@" ;;
     peers)       llama_peer_status ;;
     menu)
       echo "  1) build llama.cpp       2) set model     3) start llama-server"
       echo "  4) stop llama-server     5) start rpc     6) stop rpc  0) back"
-      echo "  7) add peer (donor)      8) peer status"
+      echo "  7) add peer (donor)      8) peer status   9) pull model from Hugging Face"
       local r; read -r -p "select: " r
       case "$r" in
         1) llama_build ;;
@@ -236,9 +268,10 @@ kcv_module_llama() {
         6) rpc_stop ;;
         7) llama_add_peer "" ;;
         8) llama_peer_status ;;
+        9) llama_model_pull "" ;;
         *) : ;;
       esac
       ;;
-    *) die "usage: llama build|start|stop|rpc-start|rpc-stop|set-model <file>|add-peer <vpn-ip>|peers" ;;
+    *) die "usage: llama build|start|stop|rpc-start|rpc-stop|set-model <file>|pull <hf-url>|add-peer <vpn-ip>|peers" ;;
   esac
 }
