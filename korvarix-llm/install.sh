@@ -150,11 +150,57 @@ up() {
   if docker network inspect korvarix-llm-net >/dev/null 2>&1; then
     net_args=(--network korvarix-llm-net --network-alias open-webui)
   fi
+
+  # ---- korvarix branding (theme + logos) -------------------------------------
+  # Open WebUI serves /static/custom.css and /static/{logo,favicon,splash}.png
+  # from its static dir; per-file -v mounts override exactly those paths with
+  # the korvarix set (theme/custom.css + scripts/make-branding.mjs output).
+  # WEBUI_NAME renames the UI text; ENABLE_VERSION_UPDATE_CHECK stays on the
+  # stock value. Assets are (re)generated fresh on every install so an updated
+  # logo.svg lands on the next re-run, like the gate's --no-cache rule.
+  local theme_args=()
+  if [[ -f "$HERE/theme/custom.css" ]]; then
+    log "branding: korvarix theme + logos"
+    mkdir -p "$HERE/theme/assets"
+    # regenerate the PNG/ICO set from the korvarix vector logo (needs node;
+    # if node is missing on this box, fall back to the committed copies)
+    if command -v node >/dev/null 2>&1; then
+      node "$HERE/scripts/make-branding.mjs" "$HERE/theme/korvarix-logo.svg" "$HERE/theme/assets" >/dev/null 2>&1 \
+        || warn "branding: generator failed - using committed theme assets"
+    else
+      warn "branding: node not found - using committed theme assets"
+    fi
+    theme_args+=(
+      -v "$HERE/theme/custom.css:/app/backend/open_webui/static/custom.css:ro"
+      -v "$HERE/theme/assets/logo.png:/app/backend/open_webui/static/logo.png:ro"
+      # index.html declares favicon.png AND favicon.svg; browsers prefer the
+      # SVG - missing this mount left the stock Open WebUI tab icon
+      -v "$HERE/theme/assets/favicon.svg:/app/backend/open_webui/static/favicon.svg:ro"
+      -v "$HERE/theme/assets/favicon.png:/app/backend/open_webui/static/favicon.png:ro"
+      -v "$HERE/theme/assets/favicon-96x96.png:/app/backend/open_webui/static/favicon-96x96.png:ro"
+      -v "$HERE/theme/assets/favicon.ico:/app/backend/open_webui/static/favicon.ico:ro"
+      -v "$HERE/theme/assets/apple-touch-icon.png:/app/backend/open_webui/static/apple-touch-icon.png:ro"
+      -v "$HERE/theme/assets/splash.png:/app/backend/open_webui/static/splash.png:ro"
+      -v "$HERE/theme/assets/splash-dark.png:/app/backend/open_webui/static/splash-dark.png:ro"
+      -v "$HERE/theme/assets/web-app-manifest-192x192.png:/app/backend/open_webui/static/web-app-manifest-192x192.png:ro"
+      -v "$HERE/theme/assets/web-app-manifest-512x512.png:/app/backend/open_webui/static/web-app-manifest-512x512.png:ro"
+    )
+    # brand name in the UI (title, docs header). QUOTED value: .env is sourced
+    # by install.sh and by the container's --env-file, and an unquoted space
+    # ("WEBUI_NAME=Korvarix AI") makes bash try to run `AI` as a command.
+    if ! grep -q '^WEBUI_NAME=' .env 2>/dev/null; then
+      printf 'WEBUI_NAME="Korvarix AI"\n' >> .env
+    fi
+  else
+    warn "branding: theme/custom.css not found - skipping (upload the whole folder)"
+  fi
+
   docker run -d \
     --name "$CONTAINER_NAME" \
     --restart unless-stopped \
     --add-host=host.docker.internal:host-gateway \
     "${net_args[@]}" \
+    "${theme_args[@]}" \
     -p "127.0.0.1:${port}:8080" \
     --env-file .env \
     -v "${VOLUME_NAME}:/app/backend/data" \
@@ -173,6 +219,7 @@ up() {
 # ---- korvarix SSO gate: node sidecar between nginx and Open WebUI ------------
 # Validates the korvarix SSO code, checks the LLM access package, syncs the
 # korvarix avatar (no gravatar), and proxies with the trusted headers.
+# shellcheck disable=SC2034  # kept for parity with the documented folder layout
 GATE_DIR="$HERE/gate"
 GATE_PORT_DEFAULT=8211
 
@@ -278,12 +325,21 @@ gate_run() {
     -e GATE_TRACE=1 \
     -e WEBUI_HOST=open-webui \
     -e WEBUI_INTERNAL_PORT=8080 \
+    -v /etc/korvarix-llm:/etc/korvarix-llm:ro \
+    -v /var/log/korvarix:/var/log/korvarix \
+    -e KORVARIX_POLICY_PATH=/etc/korvarix-llm/korvarix-policy.json \
+    -e KORVARIX_USAGE_LOG=/var/log/korvarix/llm-usage.jsonl \
     korvarix-llm-gate >/dev/null
+  # policy + usage: /etc/korvarix-llm (station-pushed policy, ro) and
+  # /var/log/korvarix (usage JSONL, rw) ride in from the host when they exist;
+  # without them the gate runs on built-in defaults and skips usage logging.
 
   # prove the running container carries the CURRENT gate.js: compare the hash
   # inside the container with the file on disk
-  local want="$(sha256sum "$HERE/gate/gate.js" | cut -d' ' -f1)"
-  local have="$(docker exec korvarix-llm-gate sha256sum /gate/gate/gate.js 2>/dev/null | cut -d' ' -f1 || true)"
+  local want
+  want="$(sha256sum "$HERE/gate/gate.js" | cut -d' ' -f1)"
+  local have
+  have="$(docker exec korvarix-llm-gate sha256sum /gate/gate/gate.js 2>/dev/null | cut -d' ' -f1 || true)"
   if [[ "$have" != "$want" ]]; then
     die "gate image does NOT contain the current gate.js (image=$have file=$want) - build cache or upload issue"
   fi

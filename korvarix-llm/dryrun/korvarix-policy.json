@@ -1,0 +1,20 @@
+{
+  "version": 1757858400,
+  "models": ["glm-5.3-flash"],
+  "limits": {
+    "requests_per_min_per_ip": 10,
+    "requests_per_min_per_key": 30,
+    "max_in_flight_per_ip": 2,
+    "max_context_tokens": 32768,
+    "max_output_tokens": 8192,
+    "max_prompt_chars": 128000,
+    "temperature_max": 1.0,
+    "top_p_max": 1.0,
+    "max_keys_per_ip_per_day": 5
+  },
+  "features": {
+    "web_lookup": false,
+    "safety_filter": true,
+    "system_prompt_locked": false
+  }
+}

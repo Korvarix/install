@@ -1,0 +1,296 @@
+/* korvarix theme for Open WebUI (loaded as /static/custom.css - the officially
+ * supported branding surface, applied after the built-in styles on every page).
+ * Palette mirrors korvarix.com/assets/css/style.css :root exactly.
+ * Version bump (v= query in index.html is not used here; browsers cache hard -
+ * the install script touches this file so operators can bust cache with ?v=).
+ * Korvarix: --bg #070a12, --surface #101624, --accent #22d3ee, --accent-2 #8b5cf6
+ */
+
+:root {
+  /* Open WebUI variables (Ollama-style theme layer) - light theme values are
+   * overridden to the korvarix palette; dark stays dark but on-brand */
+  --color-stone-50: #070a12;
+  --color-stone-100: #0b101d;
+  --color-stone-200: #101624;
+  --color-stone-300: #161e31;
+  --color-stone-400: #64748b;
+  --color-stone-500: #a8b6cc;
+  --color-stone-600: #cbd5e1;
+  --color-stone-700: #101624;
+  --color-stone-800: #0b101d;
+  --color-stone-900: #070a12;
+  --color-stone-950: #05070d;
+
+  --color-gray-50: #070a12;
+  --color-gray-100: #0b101d;
+  --color-gray-200: #101624;
+  --color-gray-300: #161e31;
+  --color-gray-400: #64748b;
+  --color-gray-500: #a8b6cc;
+  --color-gray-600: #cbd5e1;
+  --color-gray-700: #101624;
+  --color-gray-800: #0b101d;
+  --color-gray-900: #070a12;
+  --color-gray-950: #05070d;
+
+  /* brand accents (korvarix cyan -> violet gradient) */
+  --color-cyan-500: #22d3ee;
+  --color-cyan-600: #0ea5c4;
+  --color-violet-500: #8b5cf6;
+  --color-violet-600: #7c3aed;
+}
+
+/* force the korvarix dark look regardless of the user's theme choice */
+html,
+body,
+.dark {
+  background-color: #070a12 !important;
+  color: #e6eaf2 !important;
+  font-family: "Segoe UI", system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif !important;
+}
+
+/* korvarix ambient glow background (same as the base site body) */
+body {
+  background-image:
+    radial-gradient(900px 500px at 85% -10%, rgba(139, 92, 246, 0.1), transparent 60%),
+    radial-gradient(800px 500px at 0% 0%, rgba(34, 211, 238, 0.08), transparent 55%) !important;
+  background-attachment: fixed !important;
+}
+
+/* surfaces */
+#app,
+main,
+aside,
+.sidebar,
+.sidebar-content {
+  background-color: #070a12 !important;
+}
+
+/* cards / panels */
+.bg-gray-50,
+.bg-gray-100,
+.bg-gray-200,
+.bg-stone-100,
+.bg-stone-200,
+.bg-\[\#0f172a\] {
+  background-color: #101624 !important;
+}
+
+/* borders */
+.border-gray-100,
+.border-gray-200,
+.border-gray-300,
+.border-stone-100,
+.border-stone-200 {
+  border-color: rgba(148, 163, 184, 0.14) !important;
+}
+
+/* links + accent text */
+a,
+.text-cyan-500,
+.text-blue-500 {
+  color: #22d3ee !important;
+}
+a:hover {
+  color: #67e8f9 !important;
+}
+
+/* primary buttons -> korvarix gradient */
+.btn-primary,
+.bg-cyan-500,
+.bg-blue-500,
+.bg-emerald-500 {
+  background: linear-gradient(120deg, #22d3ee, #8b5cf6) !important;
+  border: none !important;
+  color: #ffffff !important;
+}
+.bg-cyan-500:hover,
+.bg-blue-500:hover,
+.bg-emerald-500:hover {
+  filter: brightness(1.12);
+}
+
+/* OWUI's INVERTED primary buttons: `bg-black text-white dark:bg-white
+ * dark:hover:bg-gray-100 dark:text-black` (chat send, Create/Save submits,
+ * hover variant included). On the korvarix theme these were the white pills
+ * with near-black text - they get the brand gradient + white text, and the
+ * hover state (dark:hover:bg-gray-100) keeps the gradient instead of going
+ * white */
+.dark .dark\:bg-white.dark\:hover\:bg-gray-100,
+.dark .dark\:bg-white.dark\:text-black,
+.dark button.dark\:bg-white {
+  background: linear-gradient(120deg, #22d3ee, #8b5cf6) !important;
+  border: none !important;
+  color: #ffffff !important;
+}
+.dark .dark\:bg-white.dark\:hover\:bg-gray-100:hover,
+.dark .dark\:bg-white.dark\:text-black:hover,
+.dark button.dark\:bg-white:hover {
+  background: linear-gradient(120deg, #22d3ee, #8b5cf6) !important;
+  filter: brightness(1.12) !important;
+}
+
+/* text selection: OWUI highlights ::selection white-ish by default; force the
+ * brand cyan so selected text never renders white-on-white / dark-on-dark */
+::selection {
+  background: rgba(34, 211, 238, 0.45) !important;
+  color: #ffffff !important;
+}
+
+/* secondary buttons / ghost surfaces */
+.bg-gray-300,
+.bg-gray-400 {
+  background-color: #161e31 !important;
+}
+
+/* chat message bubbles */
+.user-message,
+.assistant-message {
+  background-color: #101624 !important;
+  border-color: rgba(148, 163, 184, 0.14) !important;
+}
+
+/* code blocks: korvarix mono + surface */
+pre,
+code {
+  font-family: "Cascadia Code", Consolas, "SF Mono", Menlo, monospace !important;
+}
+pre {
+  background-color: #0b101d !important;
+  border: 1px solid rgba(148, 163, 184, 0.14) !important;
+  border-radius: 9px !important;
+}
+
+/* inputs */
+input,
+textarea,
+select {
+  background-color: #0b101d !important;
+  border-color: rgba(148, 163, 184, 0.28) !important;
+  color: #e6eaf2 !important;
+}
+input:focus,
+textarea:focus,
+select:focus {
+  border-color: #22d3ee !important;
+  outline: none !important;
+}
+
+/* secondary text (placeholders, hints, timestamps, model descriptions):
+ * the gray/stone text ramp reads dim on the dark surfaces - map EVERY text
+ * tier to a readable slate ramp. Verified against the OWUI build's actual
+ * class usage: dark:text-gray-100..900 + plain/hover/placeholder variants
+ * (light-theme tokens also render here since the UI is forced dark).
+ * Backgrounds are overridden separately, so these can't lighten a surface. */
+.text-gray-100,
+.text-gray-200,
+.text-gray-300,
+.text-gray-400,
+.text-gray-500,
+.text-gray-600,
+.text-gray-700,
+.text-gray-800,
+.text-gray-900,
+.text-gray-950,
+.dark .text-gray-100,
+.dark .text-gray-200,
+.dark .text-gray-300,
+.dark .text-gray-400,
+.dark .text-gray-500,
+.dark .text-gray-600,
+.dark .text-gray-700,
+.dark .text-gray-800,
+.dark .text-gray-900,
+.dark .text-gray-950,
+.text-stone-100,
+.text-stone-200,
+.text-stone-300,
+.text-stone-400,
+.text-stone-500,
+.text-stone-600,
+.text-stone-700,
+.text-stone-800,
+.text-stone-900,
+.dark .text-stone-100,
+.dark .text-stone-200,
+.dark .text-stone-300,
+.dark .text-stone-400,
+.dark .text-stone-500,
+.dark .text-stone-600,
+.dark .text-stone-700,
+.dark .text-stone-800,
+.dark .text-stone-900 {
+  color: #dfe6f0 !important;
+}
+/* mid tiers get one step dimmer so hierarchy survives (labels vs body) */
+.text-gray-400,
+.dark .text-gray-400,
+.text-stone-400,
+.dark .text-stone-400,
+.text-gray-500,
+.dark .text-gray-500,
+.text-stone-500,
+.dark .text-stone-500 {
+  color: #b7c3d6 !important;
+}
+/* the dimmest tier stays distinct but readable */
+.text-gray-600,
+.dark .text-gray-600,
+.text-stone-600,
+.dark .text-stone-600 {
+  color: #a3b1c7 !important;
+}
+/* hover states: same treatment so hover doesn't go DARKER than rest text */
+.hover\:text-gray-100:hover,
+.hover\:text-gray-200:hover,
+.hover\:text-gray-300:hover,
+.hover\:text-gray-400:hover,
+.hover\:text-gray-500:hover,
+.hover\:text-gray-600:hover,
+.hover\:text-gray-700:hover,
+.hover\:text-gray-800:hover,
+.hover\:text-gray-900:hover,
+.hover\:text-gray-950:hover,
+.dark .hover\:text-gray-100:hover,
+.dark .hover\:text-gray-200:hover,
+.dark .hover\:text-gray-300:hover,
+.dark .hover\:text-gray-400:hover,
+.dark .hover\:text-gray-500:hover,
+.dark .hover\:text-gray-600:hover,
+.dark .hover\:text-gray-700:hover,
+.dark .hover\:text-gray-800:hover,
+.dark .hover\:text-gray-900:hover {
+  color: #ffffff !important;
+}
+/* placeholders (input/textarea) - includes the dark: variants */
+.placeholder\:text-gray-300::placeholder,
+.placeholder\:text-gray-400::placeholder,
+.placeholder\:text-gray-500::placeholder,
+.placeholder\:text-gray-600::placeholder,
+.placeholder\:text-gray-700::placeholder,
+.dark .placeholder\:text-gray-500::placeholder,
+.dark .placeholder\:text-gray-600::placeholder,
+.dark .placeholder\:text-gray-700::placeholder {
+  color: #a3b1c7 !important;
+}
+
+/* scrollbars */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: #161e31;
+  border-radius: 6px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #1d2740;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* theme-color meta is set by OWUI; keep it on-brand for mobile chrome */
+meta[name="theme-color"] {
+  content: #070a12;
+}
