@@ -166,7 +166,14 @@ llama_add_peer() {
     RPC_PEERS="$merged"
     ok "RPC_PEERS=$merged"
   fi
-  llama_server_start
+  # no model yet? the peer registration is already persisted - it takes
+  # effect on the next real start. Dying here would just confuse.
+  if [[ -z "${MODEL_FILE:-}" ]]; then
+    warn "peer registered but no MODEL_FILE set - takes effect when llama-server starts"
+    warn "set a model: menu 4 -> 2 (needs a .gguf in ${MODELS_DIR:-/data/models}), or menu 5 (ollama catalog auto-downloads)"
+  else
+    llama_server_start
+  fi
   # verify every peer actually answers before declaring victory
   local bad=0 entry ip pt entries
   IFS=',' read -ra entries <<<"$RPC_PEERS"
