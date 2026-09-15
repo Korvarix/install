@@ -7,9 +7,11 @@ LLAMA_DIR="${KCV_LIB_DIR}/llama.cpp"
 RPC_PORT="${RPC_PORT:-50052}"
 LLAMA_PORT="${LLAMA_PORT:-8080}"
 
-# llama.cpp renamed its targets/binary names across releases (pre-0.4:
-# "rpc-server"; 0.4.x: "llama-rpc-server"). Hard-coding either breaks on the
-# other, so resolve both the cmake target AND the produced binary at runtime.
+# llama.cpp renames targets/binary names across releases (pre-0.4:
+# "rpc-server"; 0.4.x: ggml moved the RPC server to "ggml-rpc-server", and
+# llama-server became a shim + libllama-server-impl.so). Chasing target names
+# broke twice, so: build ALL (GGML_RPC=ON includes the RPC backend), then
+# resolve the produced binaries by glob - resilient to the next rename.
 _llama_pick() {
   # first existing candidate wins
   local c
@@ -17,28 +19,6 @@ _llama_pick() {
     [[ -n "$c" ]] && return 0
   done
   return 1
-}
-
-_llama_rpc_target() {
-  # generator-independent: grep the generated build db for the exact rule.
-  # ('--target help' output varies by generator and is often empty.)
-  local t
-  if [[ -f "$LLAMA_DIR/build/Makefile" ]]; then
-    t="$(grep -hoE '^[a-zA-Z0-9_-]*rpc-server[^:]*:' "$LLAMA_DIR/build/Makefile" 2>/dev/null | head -1 | tr -d ':')"
-  elif [[ -f "$LLAMA_DIR/build/build.ninja" ]]; then
-    t="$(grep -oE '^(build )?[a-zA-Z0-9_-]*rpc-server[^:]*:' "$LLAMA_DIR/build/build.ninja" 2>/dev/null | head -1 | sed 's/^build //; s/:$//')"
-  fi
-  _llama_pick "$t" rpc-server
-}
-
-_llama_serve_target() {
-  local t
-  if [[ -f "$LLAMA_DIR/build/Makefile" ]]; then
-    t="$(grep -hoE '^[a-zA-Z0-9_-]*llama-server[^:]*:' "$LLAMA_DIR/build/Makefile" 2>/dev/null | grep -v rpc | head -1 | tr -d ':')"
-  elif [[ -f "$LLAMA_DIR/build/build.ninja" ]]; then
-    t="$(grep -hoE '^(build )?[a-zA-Z0-9_-]*llama-server[^:]*:' "$LLAMA_DIR/build/build.ninja" 2>/dev/null | grep -v rpc | head -1 | sed 's/^build //; s/:$//')"
-  fi
-  _llama_pick "$t" llama-server
 }
 
 _llama_rpc_bin() {
@@ -68,9 +48,7 @@ llama_build() {
   local jobs
   jobs="$(free -m | awk '/Mem:/{m=$2} END{printf "%d", m/1100}')"
   (( jobs < 1 )) && jobs=1
-  local out rc rpc_tgt serve_tgt
-  # probe targets AFTER configure: on a fresh clone build/ does not exist yet,
-  # so pre-probing found nothing (and fell back to stale legacy names)
+  local out rc
   out="$(
     cd "$LLAMA_DIR" || exit 10
     git fetch --tags --force 2>/dev/null || true
@@ -78,23 +56,18 @@ llama_build() {
       git checkout "$LLAMA_CPP_REF" || exit 10
     fi
     cmake -B build -DGGML_RPC=ON -DGGML_NATIVE=ON -DCMAKE_BUILD_TYPE=Release 2>&1 || exit 10
+    # ALL, not --target: upstream keeps renaming targets; GGML_RPC=ON already
+    # includes the RPC backend in the default set, so ALL always has it
+    cmake --build build -j"$jobs" 2>&1 || exit 11
   )" && rc=0 || rc=$?
-  if (( rc != 0 )); then
-    printf '%s\n' "$out" | tail -25 >&2
-    die "cmake configure failed - output above"
-  fi
-  rpc_tgt="$(_llama_rpc_target)"
-  serve_tgt="$(_llama_serve_target)"
-  log "llama: targets: $rpc_tgt + $serve_tgt"
-  out="$(cd "$LLAMA_DIR" && cmake --build build --target "$rpc_tgt" "$serve_tgt" -j"$jobs" 2>&1)" \
-    && rc=0 || rc=$?
   if (( rc != 0 )); then
     # cmake noise is enormous - show only the tail where the real error lives
     printf '%s\n' "$out" | tail -25 >&2
+    (( rc == 10 )) && die "cmake configure failed - output above"
     die "build failed - output above"
   fi
-  [[ -x "$(_llama_rpc_bin)" ]] || die "build did not produce rpc-server ($rpc_tgt)"
-  [[ -x "$(_llama_serve_bin)" ]] || die "build did not produce llama-server ($serve_tgt)"
+  [[ -x "$(_llama_rpc_bin)" ]] || die "build did not produce an rpc-server binary (glob: $LLAMA_DIR/build/bin/*rpc-server)"
+  [[ -x "$(_llama_serve_bin)" ]] || die "build did not produce a llama-server binary"
   ok "llama: build complete ($(nproc) cores, $jobs jobs)"
 }
 
