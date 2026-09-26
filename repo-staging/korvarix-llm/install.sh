@@ -693,11 +693,20 @@ ollama_check() {
     ep="$(echo "$ep" | xargs)"
     [[ -n "$ep" ]] || continue
     total=$((total + 1))
-    if curl -fs --max-time 5 "${ep%/}/api/version" >/dev/null 2>&1; then
+    local rc=0
+    curl -fs --max-time 5 "${ep%/}/api/version" >/dev/null 2>&1 || rc=$?
+    if ((rc == 0)); then
       log "ollama OK: ${ep%/}"
       ok=$((ok + 1))
     else
-      warn "ollama UNREACHABLE: ${ep%/} (endpoint down? firewall? wrong IP?)"
+      # diagnose WHY: refused vs filtered are different failures with
+      # different fixes - ping reaching the node does NOT mean the daemon
+      # answers (OLLAMA_BIND default is 127.0.0.1 = loopback-only)
+      case "$rc" in
+        7)  warn "ollama REFUSED: ${ep%/} - nothing listening on 11434 (daemon down: systemctl status korvarix-ollama; or OLLAMA_BIND still 127.0.0.1 on that node - set it to its VPN IP and restart)" ;;
+        28) warn "ollama TIMEOUT: ${ep%/} - no answer in 5s (firewall dropping 11434 from this box, wg0 down on that node, or wrong IP)" ;;
+        *)  warn "ollama UNREACHABLE: ${ep%/} (curl exit $rc)" ;;
+      esac
     fi
   done
   if ((ok == total && total > 0)); then
@@ -887,7 +896,10 @@ local_proxy_status() {
   done
   if [[ -n "$found" ]]; then
     NGINX_CONF="$found"
-    grep -m1 server_name "$found" | sed 's/^ *//;s/;/ /' | sed "s/^/proxy:    (${found}) /"
+    # awk, not sed: the conf path can contain "/" (sed delimiter), which made
+    # status die with "unknown option to `s'" and (set -e) truncated the rest
+    # of the status output
+    grep -m1 server_name "$found" | awk -v f="$found" '{sub(/^ +/, ""); sub(/;/, " "); printf "proxy:    (%s) %s\n", f, $0}'
     return 0
   fi
   NGINX_CONF=""
