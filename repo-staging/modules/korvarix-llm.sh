@@ -117,6 +117,39 @@ klm_run() {
   ( cd "$KLM_DIR/korvarix-llm" && bash install.sh "$action" "$@" )
 }
 
+# ollama-check that works from ANY role. On the frontend it runs the real
+# install.sh check (the pool is defined there in OLLAMA_BASE_URLS). On
+# master/worker/interface (no /opt/korvarix-llm) it probes this cluster's
+# own Ollama endpoints instead: MASTER_VPN_IP + NODE_VPN_IP, so a serving
+# node can verify the whole pool from its own box.
+klm_ollama_check() {
+  local dir="$KLM_DIR/korvarix-llm"
+  if [[ -f "$dir/install.sh" ]]; then
+    ( cd "$dir" && bash install.sh ollama-check )
+    return
+  fi
+  # not the frontend box: derive endpoints from the cluster config
+  local eps=()
+  [[ -n "${MASTER_VPN_IP:-}" ]] && eps+=("http://$MASTER_VPN_IP:${OLLAMA_PORT:-11434}")
+  [[ -n "${NODE_VPN_IP:-}" && "${role:-}" != "master" ]] && eps+=("http://$NODE_VPN_IP:${OLLAMA_PORT:-11434}")
+  if ((${#eps[@]} == 0)); then
+    die "no Ollama endpoints known on this box - set MASTER_VPN_IP (or OLLAMA_BIND) in $KCV_ENV_FILE, or run this on the frontend"
+  fi
+  local ok=0 total=0 ep rc
+  for ep in "${eps[@]}"; do
+    total=$((total + 1))
+    curl -fs --max-time 5 "${ep%/}/api/version" >/dev/null 2>&1 \
+      && { log "ollama OK: $ep"; ok=$((ok + 1)); } \
+      || warn "ollama UNREACHABLE: $ep (daemon down? OLLAMA_BIND loopback? firewall?)"
+  done
+  if ((ok == total)); then
+    ok "ollama pool: ${ok}/${total} endpoints answering"
+  else
+    warn "ollama pool: only ${ok}/${total} endpoints answering"
+    return 1
+  fi
+}
+
 klm_menu() {
   echo "  1) install/update frontend (Open WebUI + wiring)"
   echo "  2) install SSO gate      3) install nginx proxy"
@@ -132,7 +165,7 @@ klm_menu() {
     4) klm_status ;;
     5) docker logs --tail 100 korvarix-llm 2>&1 | tail -100 ;;
     6) klm_run check || warn "check reported warnings above" ;;
-    7) klm_run ollama-check || warn "a pool endpoint is not answering" ;;
+    7) klm_ollama_check || warn "a pool endpoint is not answering" ;;
     8) kcv_confirm "EMERGENCY gate-off: panel opens WITHOUT korvarix.com SSO. Only for a base-site outage. Continue?" || return 0
        klm_run gate-off ;;
     9) klm_run gate-on ;;
@@ -149,7 +182,7 @@ kcv_module_korvarix-llm() {
     status)       klm_status ;;
     fetch)        klm_fetch ;;
     check)        klm_run check ;;
-    ollama-check) klm_run ollama-check ;;
+    ollama-check) klm_ollama_check ;;
     gate-off)     klm_run gate-off ;;
     gate-on)      klm_run gate-on ;;
     menu)         klm_menu ;;
