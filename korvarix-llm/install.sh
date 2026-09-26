@@ -887,7 +887,10 @@ local_proxy_status() {
   done
   if [[ -n "$found" ]]; then
     NGINX_CONF="$found"
-    grep -m1 server_name "$found" | sed 's/^ *//;s/;/ /' | sed "s/^/proxy:    (${found}) /"
+    # awk, not sed: the conf path can contain "/" (sed delimiter), which made
+    # status die with "unknown option to `s'" and (set -e) truncated the rest
+    # of the status output
+    grep -m1 server_name "$found" | awk -v f="$found" '{sub(/^ +/, ""); sub(/;/, " "); printf "proxy:    (%s) %s\n", f, $0}'
     return 0
   fi
   NGINX_CONF=""
