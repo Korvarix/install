@@ -50,10 +50,22 @@ klm_wire_cluster() {
     sed -i "s|^OPENAI_API_BASE_URL=.*|OPENAI_API_BASE_URL=$master|" "$env_file"
     log "wired cluster endpoint: $master"
   fi
-  # ollama backend (allowlist models) when the master serves one
+  # ollama backend (pool or single node)
+  # KLM_OLLAMA_ENDPOINTS (comma-separated, optional) wins; else master's
+  # 11434. Written into OLLAMA_BASE_URLS (pool) when >1 endpoint, else
+  # OLLAMA_BASE_URL. install.sh's ollama-check verifies every endpoint.
   local ollama="${KLM_OLLAMA_ENDPOINT:-}"
-  if [[ -z "$ollama" && -n "${MASTER_VPN_IP:-}" ]]; then
-    ollama="http://$MASTER_VPN_IP:${OLLAMA_PORT:-11434}"
+  local pool="${KLM_OLLAMA_ENDPOINTS:-}"
+  if [[ -z "$pool" && -n "${MASTER_VPN_IP:-}" ]]; then
+    pool="http://$MASTER_VPN_IP:${OLLAMA_PORT:-11434}"
+  fi
+  if [[ -n "$pool" ]] && ! grep -q '^OLLAMA_BASE_URLS=.\+' "$env_file"; then
+    if [[ "$pool" == *","* ]]; then
+      sed -i "s|^OLLAMA_BASE_URLS=.*|OLLAMA_BASE_URLS=$pool|" "$env_file"
+      log "wired ollama pool: $pool"
+    elif [[ -z "$ollama" ]]; then
+      ollama="$pool"
+    fi
   fi
   if [[ -n "$ollama" ]] && ! grep -q '^OLLAMA_BASE_URL=.\+' "$env_file"; then
     sed -i "s|^OLLAMA_BASE_URL=.*|OLLAMA_BASE_URL=$ollama|" "$env_file"

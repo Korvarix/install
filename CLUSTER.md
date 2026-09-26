@@ -185,18 +185,18 @@ $1,250.48 · monthly: master $163.20 · Hub $13.45 · donor $115.76.
 ## Quickstart (the wizard drives everything)
 
 ```bash
-# 1. Buy the interface mini-box + master + donors (KVM! same region! checklist)
+# 1. Buy the interface mini-box + master + workers (KVM! same region! checklist)
 # 2. Upload korvarix-cluster.sh to each machine, then per machine:
 
 ./korvarix-cluster.sh            # menu
 
 # On the interface box:  1) wizard → Interface box
 #                        3) VPN management → issue a peer for EVERY box
-#                           (hub + node1 + each donor + frontend)
-# On node1 (master):     1) wizard → First node (walks VPN join → llama build
-#                           + rpc → set model + serve → cron)
-# On each donor:         1) wizard → Additional node (VPN join → rpc-server;
-#                           prints the add-peer command to run on the master)
+#                           (master + each worker + frontend)
+# On node1 (master):     1) wizard → First node (walks VPN join → sandboxed
+#                           ollama → bind VPN IP → allowlist → pull → policy)
+# On each worker:        1) wizard → Additional node (VPN join → own sandboxed
+#                           ollama + pull; prints the frontend pool command)
 # On the frontend box:   1) wizard → Frontend box (VPN join → korvarix-llm)
 ```
 
@@ -206,9 +206,26 @@ Non-interactive entrypoints (what cron and scripts call):
 ./korvarix-cluster.sh health     # health check (cron calls this)
 ./korvarix-cluster.sh backup     # nightly restic backup
 ./korvarix-cluster.sh update     # refresh modules from the repo (manual)
-./korvarix-cluster.sh llama add-peer <vpn-ip>    # register donor (on master)
+./korvarix-cluster.sh ollama serve               # sandboxed daemon (per node)
+./korvarix-cluster.sh ollama pull                # allowlist models (per node)
 ./korvarix-cluster.sh vpn issue <name>           # new peer config (interface)
-./korvarix-cluster.sh llama start|stop|rpc-start|set-model <file>
+./korvarix-cluster.sh uninstall rpc              # retire legacy rpc-server (donor)
+```
+
+### Legacy merged-RAM era (retired 2026-09)
+
+The original design was llama.cpp `llama-server` on the master with
+`rpc-server` donors offering their RAM over the tunnel ("merged-RAM").
+It is retired in favor of the Ollama worker pool: inference is always local
+to a node (RAM cannot be pooled over a network — RPC streamed tensor layers
+but still computed per-node), while the pool scales **concurrency**, not
+model size. Existing units can be retired per node without touching
+anything else:
+
+```bash
+korvarix-cluster.sh uninstall rpc   # on the old donor
+# then on the master: drop the donor from RPC_PEERS in korvarix.env,
+# restart llama-server (if still serving), or skip llama.cpp entirely.
 ```
 
 ## The module system
@@ -310,14 +327,14 @@ Catalog edits: one line per model in `OLLAMA_CATALOG` (top of
 #   5 build policy → 6 push policy to frontend → 7 install daily cron
 ```
 
-**One location, many models:** clients always hit the single public endpoint
+**One location, many nodes:** clients always hit the single public endpoint
 (`llm.korvarix.com`). The frontend's Open WebUI **merges** every connected
-backend into one model list, so adding capacity or models is invisible to
+worker into one model list, so adding capacity or models is invisible to
 clients — no client config changes ever:
 
 1. Set `MODELS_ALLOWLIST="model1 model2 model3"` in the station `.env`
    (space-separated ollama names, e.g. `qwen2.5:7b llama3.1:8b mistral-nemo`)
-2. Menu 5: `3` pull (downloads all of them)
+2. Menu 5: `3` pull (downloads all of them on THIS node)
 3. Set `OLLAMA_BIND=<NODE_VPN_IP>` (e.g. `10.8.0.11`) so the daemon is
    reachable over the VPN — never a public IP
 4. The frontend wizard auto-wires the frontend's `korvarix-llm/.env`:
@@ -325,9 +342,28 @@ clients — no client config changes ever:
    `./install.sh` after setting it manually
 5. Menu 5: `5` build policy → `6` push (the gate now guards all of them)
 
-More models later = add to `MODELS_ALLOWLIST` → `3` pull → `5`+`6`. More
-capacity later = buy a donor, run its wizard, then on the master:
-`llama add-peer <its-vpn-ip>` (one command; RAM merges, models don't move).
+**Adding a worker node (the pool):** each worker runs its own sandboxed
+Ollama daemon; the master serves the model FILES (NFS read-only export
+mounted by workers — weights exist only on master disk, workers stream them
+into RAM at load). Per node:
+
+```bash
+./korvarix-cluster.sh           # wizard → 3) Additional node
+# joins VPN, installs sandboxed ollama bound to its VPN IP, pulls allowlist
+```
+
+then on the FRONTEND (once per worker):
+
+```bash
+# korvarix-llm/.env: append the endpoint to the pool
+OLLAMA_BASE_URLS=http://10.8.0.11:11434,http://10.8.0.15:11434
+./install.sh && ./install.sh ollama-check   # every endpoint must answer
+```
+
+Capacity math is concurrency, not model size: per-user gate caps (2
+concurrent completions per account, `num_thread` ≤ 8) mean a 2-node pool
+serves ~4 concurrent user slots. Model fit per node is unchanged by pooling —
+each worker still needs the model's full RAM locally (see Model fit).
 
 **Legal notes for a public endpoint:** the combination above (allowlist-only
 models, clamped params, rate limits, pre-model refusal of illegal-content
@@ -376,13 +412,13 @@ ollama.com, package repos) are reachability-gated before any download.
 
 | Task | Where |
 |---|---|
-| Add a RAM donor | wizard on the new box → "Additional node", then on master: `llama add-peer <vpn-ip>` |
-| Bigger merged model after adding donors | master `.env` RPC_PEERS grows automatically via add-peer; restart llama-server |
-| Serve a different model | master menu 4 → set model → start |
+| Add a worker node | wizard on the new box → "Additional node", then append its endpoint to `OLLAMA_BASE_URLS` on the frontend + `./install.sh ollama-check` |
+| Serve a different model | serving node menu 5 → pull allowlist; frontend picker updates itself |
 | Check cluster health | any box: menu 2 (or `health` for cron-view) |
-| Peer status (merged-RAM donors) | master menu 4 → 8 (or `llama peers`) |
+| Pool endpoint status | frontend: `./install.sh ollama-check` |
 | View logs | menu 9 (llama/rpc/wireguard/ollama/health/backup) |
 | Restore data | menu 6 → restore (snapshots listed) |
+| Retire a legacy rpc donor | that box: `korvarix-cluster.sh uninstall rpc`; master: drop from `RPC_PEERS` |
 
 ## Wiring into korvarix-llm (Open WebUI frontend)
 
@@ -395,30 +431,40 @@ model endpoints from the cluster config, then drives the box's own
 **Manual** — deploy `korvarix-llm/install.sh` yourself, then in its `.env`:
 
 ```
+# single Ollama node:
+OLLAMA_BASE_URL=http://<MASTER_VPN_IP>:11434
+
+# or the pool (overrides the single URL):
+OLLAMA_BASE_URLS=http://10.8.0.11:11434,http://10.8.0.15:11434
+
+# legacy llama.cpp endpoint (retired path, still honored):
 OPENAI_API_BASE_URL=http://<MASTER_VPN_IP>:8080/v1
 OPENAI_API_KEY=sk-none
-OLLAMA_BASE_URL=http://<MASTER_VPN_IP>:11434
 ```
 
-llama-server binds to the master's VPN IP (`LLAMA_BIND`) — reachable only over
-the tunnel, never a public IP. All frontend secrets (SSO keys, OWUI API key)
+Ollama binds to each node's VPN IP (`OLLAMA_BIND`) — reachable only over the
+tunnel, never a public IP. All frontend secrets (SSO keys, OWUI API key)
 stay in the frontend box's `korvarix-llm/.env` — the cluster never needs them.
 
 ## Model fit (what you can actually run)
 
-| Class | RAM need | 1× 128GB master | +donors merged |
-|---|---|---|---|
-| 8–14B (Qwen3, Llama 3.1 8B) | 5–16GB | fast, no RPC | — |
-| 32B dense (Qwen3 32B q4) | ~20GB | good | — |
-| 70B q4 / q8 | 43–80GB | good (~8–15 tok/s local) | fine |
-| **Qwen3 235B-A22B q4 (MoE)** | ~133GB | ❌ | ✅ 2 boxes ~2–6 tok/s; 3 boxes ~3–8 |
-| Llama 3.1 405B q4 | ~231GB | ❌ | ✅ 3 boxes (~330GB) |
-| DeepSeek 671B q4 | ~404GB | ❌ | needs a 4th donor |
+RAM is per-node in the pool era: every worker must fit the model locally
+(weights stream from the master's NFS export at load, but they land in the
+worker's RAM).
 
-MoE models are the CPU-cluster sweet spot (only active params compute).
-Each donor adds ~110GB merged RAM. Decode speed scales with donors (memory
-bandwidth pools); prefill does not (compute-bound, serialized per layer —
-64c masters close the prefill gap entirely).
+| Class | RAM need | one 128GB node | pooled workers (concurrency) |
+|---|---|---|---|
+| 8–14B (Qwen3, Llama 3.1 8B) | 5–16GB | fast | each node serves its own stream |
+| 32B dense (Qwen3 32B q4) | ~20GB | good | pool = more concurrent users |
+| 70B q4 / q8 | 43–80GB | good | pool = more concurrent users |
+| Qwen3 235B-A22B q4 (MoE) | ~133GB | ❌ one node | ❌ not poolable (weights must fit one RAM) |
+| Llama 3.1 405B q4 | ~231GB | ❌ | ❌ not poolable |
+| DeepSeek 671B q4 | ~404GB | ❌ | ❌ not poolable |
+
+**What pooling changes:** concurrency (more simultaneous users, more nodes)
+— NOT model size (a model bigger than one node's RAM cannot be served by
+pooling). MoE models still favor big single nodes; the master's 128GB + 64c
+remains the model-size ceiling.
 
 ## Purchase checklist (before buying a box)
 
@@ -443,13 +489,13 @@ bandwidth pools); prefill does not (compute-bound, serialized per layer —
 | Symptom | Cause |
 |---|---|
 | wizard fails at VPN join | wrong peer .conf, or interface box's udp/51820 closed |
-| master unreachable from donor | WG handshake down — `wg show` on both, check endpoint |
-| rpc-server down | llama.cpp ref mismatch between nodes — rebuild all with same `LLAMA_CPP_REF` |
-| model loads but 1/3 the layers | a peer's rpc-server is down — master menu 4 → 8 (or `llama peers`) |
-| tokens very slow with RPC | cross-region latency or a node on different CPU flags |
-| frontend can't reach llama-server | LLAMA_BIND not set to master's VPN IP, or WG down |
+| node unreachable | WG handshake down — `wg show` on both, check endpoint |
+| ollama-check: REFUSED on one node | daemon down or OLLAMA_BIND still 127.0.0.1 there — `systemctl status korvarix-ollama`, set bind to the node's VPN IP, restart |
+| ollama-check: TIMEOUT on one node | firewall dropping 11434 from the frontend, or wg0 down on that node |
+| model missing from picker | not in MODELS_ALLOWLIST or not pulled on that worker — menu 5 → 3 (pull runs per node) |
 | policy push fails | FRONTEND_VPN_IP not set (or frontend not joined to the VPN) |
 | disk alerts but models dir is small | ollama pull churn — check `ollama list` + prune via menu 5 |
+| rpc peer NOT answering (legacy) | rpc-server down there — retire via `uninstall rpc`, or rebuild all nodes with the same `LLAMA_CPP_REF` |
 
 ## What lives where
 
