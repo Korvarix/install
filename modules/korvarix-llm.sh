@@ -109,10 +109,20 @@ klm_status() {
   ( cd "$dir" && bash install.sh status )
 }
 
+# generic runner: every new install.sh subcommand is reachable from the
+# station without its own wrapper (ollama-check, gate-off/on, check, ...)
+klm_run() {
+  local action="$1"; shift || true
+  [[ -f "$KLM_DIR/korvarix-llm/install.sh" ]] || die "frontend not fetched yet - run korvarix-llm install first"
+  ( cd "$KLM_DIR/korvarix-llm" && bash install.sh "$action" "$@" )
+}
+
 klm_menu() {
   echo "  1) install/update frontend (Open WebUI + wiring)"
   echo "  2) install SSO gate      3) install nginx proxy"
   echo "  4) status                5) logs (100)   0) back"
+  echo "  6) check (strict)        7) ollama-check (pool)"
+  echo "  8) gate-off (EMERGENCY)  9) gate-on"
   local r
   read -r -p "select: " r
   case "$r" in
@@ -121,6 +131,11 @@ klm_menu() {
     3) klm_nginx ;;
     4) klm_status ;;
     5) docker logs --tail 100 korvarix-llm 2>&1 | tail -100 ;;
+    6) klm_run check || warn "check reported warnings above" ;;
+    7) klm_run ollama-check || warn "a pool endpoint is not answering" ;;
+    8) kcv_confirm "EMERGENCY gate-off: panel opens WITHOUT korvarix.com SSO. Only for a base-site outage. Continue?" || return 0
+       klm_run gate-off ;;
+    9) klm_run gate-on ;;
     *) : ;;
   esac
 }
@@ -128,12 +143,16 @@ klm_menu() {
 kcv_module_korvarix-llm() {
   local action="${1:-menu}"
   case "$action" in
-    install) klm_install ;;
-    gate)    klm_gate ;;
-    nginx)   klm_nginx ;;
-    status)  klm_status ;;
-    fetch)   klm_fetch ;;
-    menu)    klm_menu ;;
-    *) die "usage: korvarix-llm install|gate|nginx|status|fetch" ;;
+    install)      klm_install ;;
+    gate)         klm_gate ;;
+    nginx)        klm_nginx ;;
+    status)       klm_status ;;
+    fetch)        klm_fetch ;;
+    check)        klm_run check ;;
+    ollama-check) klm_run ollama-check ;;
+    gate-off)     klm_run gate-off ;;
+    gate-on)      klm_run gate-on ;;
+    menu)         klm_menu ;;
+    *) die "usage: korvarix-llm install|gate|nginx|status|fetch|check|ollama-check|gate-off|gate-on" ;;
   esac
 }
