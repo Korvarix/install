@@ -65,6 +65,23 @@ ollama_service() {
   local owner="root"
   [[ "${OLLAMA_SANDBOX:-1}" == "1" ]] && owner="korvarix-ollama"
   local models_dir="${OLLAMA_MODELS:-$dir/models}"
+  # bind preflight: fail HERE with a named fix instead of letting systemd
+  # crash-loop 6x on "bind: cannot assign requested address" when OLLAMA_BIND
+  # names an IP no interface of this box actually holds (typo'd VPN IP,
+  # stale .env, peer config from another box)
+  if [[ -n "${OLLAMA_BIND:-}" && "$OLLAMA_BIND" != "127.0.0.1" ]]; then
+    if ! ip -o -4 addr show 2>/dev/null | grep -qw "$OLLAMA_BIND"; then
+      local held
+      held="$(ip -o -4 addr show wg0 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | tr '\n' ' ')"
+      die "OLLAMA_BIND=$OLLAMA_BIND is not an IP this box holds - wg0 holds: ${held:-<wg0 down>}
+  fix: set OLLAMA_BIND to the VPN IP wg0 actually has (ip -4 addr show wg0), or 127.0.0.1 for loopback-only"
+    fi
+  fi
+  # models dir preflight: an unreadable/absent dir means the daemon boots
+  # empty (NFS piggyback mount not up yet)
+  if [[ ! -d "$models_dir" ]]; then
+    die "models dir not present: $models_dir (NFS piggyback: mount -a first; self-pull node: korvarix-cluster.sh ollama install)"
+  fi
   mkdir -p "$KCV_LOG_DIR"
 svc_write "ollama" "[Unit]
 Description=korvarix sandboxed Ollama (allowlist-served models)
@@ -378,8 +395,10 @@ _picks_apply() {
   warn "allowlist total pull size estimate: ~${total} GB disk (RAM use is bounded by OLLAMA_MAX_LOADED=${OLLAMA_MAX_LOADED:-2} loaded models)"
   kcv_confirm "write MODELS_ALLOWLIST to $KCV_ENV_FILE and pull now?" || { warn "cancelled - nothing written"; return 1; }
 
-  sed -i "s|^MODELS_ALLOWLIST=.*|MODELS_ALLOWLIST=$MODELS_ALLOWLIST|" "$KCV_ENV_FILE" 2>/dev/null \
-    || printf 'MODELS_ALLOWLIST=%s\n' "$MODELS_ALLOWLIST" >> "$KCV_ENV_FILE"
+  # quote on write: the .env is sourced as shell - an unquoted multi-word
+  # allowlist runs the second model name as a command (bash: command not found)
+  sed -i "s|^MODELS_ALLOWLIST=.*|MODELS_ALLOWLIST=\"$MODELS_ALLOWLIST\"|" "$KCV_ENV_FILE" 2>/dev/null \
+    || printf 'MODELS_ALLOWLIST="%s"\n' "$MODELS_ALLOWLIST" >> "$KCV_ENV_FILE"
   # re-source so ollama_pull sees the new list
   # shellcheck source=/dev/null
   set -a

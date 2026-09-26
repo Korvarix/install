@@ -129,11 +129,21 @@ klm_ollama_check() {
     return
   fi
   # not the frontend box: derive endpoints from the cluster config
+  # - dedupe (master IP == NODE_VPN_IP must not probe itself twice)
+  # - probe NODE_VPN_IP only when THIS box runs korvarix-ollama (a
+  #   non-serving node must not report itself as a dead pool endpoint)
   local eps=()
-  [[ -n "${MASTER_VPN_IP:-}" ]] && eps+=("http://$MASTER_VPN_IP:${OLLAMA_PORT:-11434}")
-  [[ -n "${NODE_VPN_IP:-}" && "${role:-}" != "master" ]] && eps+=("http://$NODE_VPN_IP:${OLLAMA_PORT:-11434}")
+  if [[ -n "${MASTER_VPN_IP:-}" ]]; then
+    eps+=("http://$MASTER_VPN_IP:${OLLAMA_PORT:-11434}")
+  elif [[ -n "${NODE_VPN_IP:-}" ]] && systemctl list-unit-files 2>/dev/null | grep -q korvarix-ollama; then
+    eps+=("http://$NODE_VPN_IP:${OLLAMA_PORT:-11434}")
+  fi
+  if [[ -n "${NODE_VPN_IP:-}" && -n "${MASTER_VPN_IP:-}" && "${NODE_VPN_IP}" != "${MASTER_VPN_IP}" ]] \
+     && systemctl list-unit-files 2>/dev/null | grep -q korvarix-ollama; then
+    eps+=("http://$NODE_VPN_IP:${OLLAMA_PORT:-11434}")
+  fi
   if ((${#eps[@]} == 0)); then
-    die "no Ollama endpoints known on this box - set MASTER_VPN_IP (or OLLAMA_BIND) in $KCV_ENV_FILE, or run this on the frontend"
+    die "no Ollama endpoints known on this box - set MASTER_VPN_IP (or install ollama: korvarix-cluster.sh ollama install) in $KCV_ENV_FILE, or run this on the frontend"
   fi
   local ok=0 total=0 ep rc
   for ep in "${eps[@]}"; do

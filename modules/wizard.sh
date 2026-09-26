@@ -22,7 +22,15 @@ wiz_env_reset() {
 
 wiz_env_set() {
   grep -v "^$1=" "$KCV_ENV_FILE" 2>/dev/null > "${KCV_ENV_FILE}.t" || true
-  printf '%s=%s\n' "$1" "$2" >> "${KCV_ENV_FILE}.t"
+  # auto-quote values containing whitespace: the .env is sourced as shell, so
+  # an unquoted multi-word value (e.g. MODELS_ALLOWLIST="m1 m2") runs the
+  # second word as a COMMAND and truncates the variable ("llama3.1:8b:
+  # command not found")
+  if [[ "$2" == *[[:space:]]* ]]; then
+    printf '%s="%s"\n' "$1" "$2" >> "${KCV_ENV_FILE}.t"
+  else
+    printf '%s=%s\n' "$1" "$2" >> "${KCV_ENV_FILE}.t"
+  fi
   mv "${KCV_ENV_FILE}.t" "$KCV_ENV_FILE"
 }
 
