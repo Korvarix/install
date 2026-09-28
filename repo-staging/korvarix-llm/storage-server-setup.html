@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>korvarix v2 — Storage Server Setup</title>
+<style>
+  :root { --ok:#16a34a; --warn:#d97706; --err:#dc2626; --accent:#2563eb; }
+  * { box-sizing: border-box; }
+  body { font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+         margin: 0; background:#f8fafc; color:#0f172a; line-height:1.55; }
+  header { background:#0f172a; color:#fff; padding: 24px 32px; }
+  header h1 { margin:0; font-size: 22px; }
+  header p { margin: 6px 0 0; color:#94a3b8; font-size: 14px; }
+  main { max-width: 900px; margin: 0 auto; padding: 24px 16px 80px; }
+  .vars { background:#fff; border:1px solid #e2e8f0; border-radius:10px; padding:16px 20px; margin: 20px 0; }
+  .vars input { width: 260px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size:14px;
+                padding:6px 10px; border:1px solid #cbd5e1; border-radius:6px; margin: 2px 0 8px; display:block; }
+  .step { background:#fff; border:1px solid #e2e8f0; border-radius:10px; margin: 18px 0; overflow:hidden; }
+  .step h2 { margin:0; padding: 12px 20px; font-size:16px; background:#eff6ff; border-bottom:1px solid #dbeafe; cursor:pointer; user-select:none; }
+  .step h2 .num { color: var(--accent); font-weight:700; margin-right:8px; }
+  .step .body { padding: 14px 20px 18px; }
+  .step.closed .body { display:none; }
+  .step h2::after { content: "▾"; float:right; color:#94a3b8; }
+  .step.closed h2::after { content:"▸"; }
+  code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  pre { background:#0f172a; color:#e2e8f0; padding: 14px 16px; border-radius: 8px; overflow-x:auto;
+        font-size: 13px; line-height:1.5; position:relative; margin: 10px 0; }
+  pre .ph { color:#fbbf24; font-weight:600; }
+  .copy { position:absolute; top:8px; right:10px; background:#334155; color:#e2e8f0; border:0; border-radius:6px;
+          font-size:11px; padding: 3px 10px; cursor:pointer; }
+  .copy:hover { background:#475569; }
+  .chk { display:flex; gap:10px; align-items:flex-start; padding: 6px 0; }
+  .chk input { margin-top: 4px; transform: scale(1.3); accent-color: var(--ok); }
+  .note { border-left: 4px solid var(--accent); background:#eff6ff; padding: 8px 14px; border-radius: 0 8px 8px 0; font-size: 14px; margin: 10px 0; }
+  .warnbox { border-left: 4px solid var(--warn); background:#fffbeb; padding: 8px 14px; border-radius: 0 8px 0 0; margin: 10px 0; font-size: 14px; }
+  table { border-collapse: collapse; width:100%; font-size:14px; margin: 8px 0; }
+  th, td { border:1px solid #e2e8f0; padding: 6px 10px; text-align:left; }
+  th { background:#f1f5f9; }
+  .progress { position:sticky; top:0; z-index:5; background:#f8fafc; padding:8px 4px; font-size:13px; color:#475569; border-bottom:1px solid #e2e8f0; }
+  code.var { background:#fef9c3; padding: 1px 5px; border-radius:4px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>korvarix v2 — Storage Server Setup</h1>
+  <p>Model library host (NFS export + model pulls). Runs on its own box; never talks to the frontend. Order: storage first, then workers.</p>
+</header>
+<main>
+<div class="progress" id="progress">0 / 0 steps checked</div>
+
+<div class="vars">
+  <strong>Fill these in first</strong> (used to build every command below):
+  <label style="display:block;margin-top:8px">Storage VPN IP (10.8.0.x): <input id="v_ip" placeholder="10.8.0.20"></label>
+  <label style="display:block">WireGuard subnet: <input id="v_net" value="10.8.0.0/24"></label>
+  <label style="display:block">Models dir on this box: <input id="v_dir" value="/var/lib/korvarix-cluster/ollama/models"></label>
+</div>
+
+<div class="step">
+  <h2><span class="num">0</span>WireGuard — join this box to the tunnel</h2>
+  <div class="body">
+    <p>On the <strong>interface box</strong> issue a peer for the storage server, then join here. (Wizard: <code>./korvarix-cluster.sh</code> → 1) wizard → Interface box → 3) VPN management → issue peer named <code>storage</code>.)</p>
+    <label class="chk"><input type="checkbox" data-step> Upload the peer .conf to this box</label>
+    <pre>./korvarix-cluster.sh vpn join <span class="ph" data-v="peer">/path/to/storage-peer.conf</span>   # or the wizard's join step
+ip -4 addr show wg0        # note the assigned VPN IP = <span class="ph" data-v="ip">10.8.0.20</span></pre>
+    <label class="chk"><input type="checkbox" data-chk> wg0 up + peer handshake OK (<code>wg show</code> on both ends)</label>
+  </div>
+</div>
+
+<div class="step">
+  <h2><span class="num">1</span>Install the Ollama stack (binary only — no daemon needed)</h2>
+  <div class="body">
+    <p>Storage runs <strong>no Ollama service</strong>. It only hosts the model files, so install the station and use its installer to get the binary + sandbox user + directory layout:</p>
+    <pre># as root, from the folder with korvarix-cluster.sh
+./korvarix-cluster.sh ollama install</pre>
+    <p class="note">This creates <code>korvarix-ollama</code> (unprivileged owner of the models dir), installs the binary under <code>/var/lib/korvarix-cluster/ollama</code>, and does <em>not</em> start any service. Do <strong>not</strong> run <code>ollama serve</code> here.</p>
+    <label class="chk"><input type="checkbox" data-chk> <code>/var/lib/korvarix-cluster/ollama/bin/ollama --version</code> prints a version</label>
+    <label class="chk"><input type="checkbox" data-chk> <code>id korvarix-ollama</code> exists</label>
+  </div>
+</div>
+
+<div class="step">
+  <h2><span class="num">2</span>Configure the models dir + allowlist (.env)</h2>
+  <div class="body">
+    <pre>cat >> /etc/korvarix-cluster/korvarix.env <<'EOF'
+
+# ---- v2 storage node ----
+OLLAMA_BIND=127.0.0.1
+OLLAMA_MODELS=/var/lib/korvarix-cluster/ollama/models
+# models clients may call (this box PULLS them; workers only mount+serve)
+MODELS_ALLOWLIST="oroboros-labs/claude-fable5"
+OLLAMA_NUM_PARALLEL=1
+OLLAMA_MAX_LOADED=1
+EOF</pre>
+    <p class="warnbox">Disk check first: <code>df -h /var/lib/korvarix-cluster</code> — each model needs its blob size on disk (fable5 ≈ 20 GB). Add only what fits.</p>
+    <label class="chk"><input type="checkbox" data-chk> .env updated, allowlist contains only the models you want stored</label>
+  </div>
+</div>
+
+<div class="step">
+  <h2><span class="num">3</span>Pull the model library (one-time, at wire speed from the CDN)</h2>
+  <div class="body">
+    <pre>./korvarix-cluster.sh ollama pull
+# verify:
+du -sh /var/lib/korvarix-cluster/ollama/models
+ls /var/lib/korvarix-cluster/ollama/models/manifests/registry.ollama.ai/oroboros-labs/</pre>
+    <p class="note">Pulls land exactly once here. Every worker mounts this dir read-only — adding a model later = edit allowlist + <code>ollama pull</code> on THIS box, workers see it instantly.</p>
+    <label class="chk"><input type="checkbox" data-chk> fable5 manifest + blobs present, disk usage ≈ expected</label>
+  </div>
+</div>
+
+<div class="step">
+  <h2><span class="num">4</span>NFS export (read-only, VPN-only)</h2>
+  <div class="body">
+    <pre>apt-get install -y nfs-kernel-server
+
+# exactly ONE export line - read-only, root squashed (workers only read):
+sed -i '/ollama\/models/d' /etc/exports
+printf '/var/lib/korvarix-cluster/ollama/models <span class="ph" data-v="net">10.8.0.0/24</span>(ro,sync,no_subtree_check,root_squash)\n' >> /etc/exports
+exportfs -ra
+exportfs -v        # must list exactly ONE entry for the models dir, (ro,...)
+
+systemctl enable --now nfs-server   # (Debian: nfs-kernel-server)
+ss -tlnp | grep 2049 || systemctl restart nfs-kernel-server</pre>
+    <p class="warnbox"><strong>ro</strong> is deliberate: workers only read. Model <em>adds</em> happen on this box via <code>ollama pull</code>, never on workers. If you ever need a worker-side write (pull on a worker), fix the topology instead of making the export rw.</p>
+    <label class="chk"><input type="checkbox" data-chk> <code>exportfs -v</code> shows one entry, flags contain <code>ro</code></label>
+    <label class="chk"><input type="checkbox" data-chk> nfs-kernel-server active</label>
+  </div>
+</div>
+
+<div class="step">
+  <h2><span class="num">5</span>Firewall — NFS only from the VPN</h2>
+  <div class="body">
+    <pre>ufw allow from <span class="ph" data-v="net">10.8.0.0/24</span> to any port 2049 proto tcp 2>/dev/null \
+  || iptables -I INPUT -p tcp -s <span class="ph" data-v="net">10.8.0.0/24</span> --dport 2049 -j ACCEPT</pre>
+    <label class="chk"><input type="checkbox" data-chk> port 2049 reachable from the VPN subnet only</label>
+  </div>
+</div>
+
+<div class="step">
+  <h2><span class="num">6</span>Verify from a worker</h2>
+  <div class="body">
+    <p>Run on the worker (after its own setup page):</p>
+    <pre>mount -t nfs <span class="ph" data-v="ip">10.8.0.20</span>:/var/lib/korvarix-cluster/ollama/models /mnt/test -o ro
+ls /mnt/test/manifests/registry.ollama.ai/oroboros-labs/ && umount /mnt/test && rmdir /mnt/test</pre>
+    <label class="chk"><input type="checkbox" data-chk> worker sees the manifests through the test mount</label>
+  </div>
+</div>
+
+<div class="step">
+  <h2><span class="num">7</span>Storage housekeeping (optional but recommended)</h2>
+  <div class="body">
+    <pre># nightly integrity + usage report (edit .env first: set BACKUP_TARGET to a NON-rented box)
+./korvarix-cluster.sh backup            # one-off test of the restic backup
+./korvarix-cluster.sh health            # wire into cron via menu (cron entry korvarix-health)</pre>
+    <p class="note">The daily <code>ollama daily</code> cron on THIS box re-pulls the allowlist (patch updates land automatically) and prunes non-allowlisted strays — install it via menu 5 → 8. Workers must not run that cron (they hold no writable copy).</p>
+    <label class="chk"><input type="checkbox" data-chk> restic backup ran once successfully</label>
+    <label class="chk"><input type="checkbox" data-chk> daily pull cron installed (menu 5 → 8)</label>
+  </div>
+</div>
+
+</main>
+<script>
+  document.querySelectorAll('.step h2').forEach(h => h.addEventListener('click', () => h.parentElement.classList.toggle('closed')));
+  function applyVars() {
+    const ip = document.getElementById('v_ip').value.trim() || '10.8.0.20';
+    const net = document.getElementById('v_net').value.trim() || '10.8.0.0/24';
+    const dir = document.getElementById('v_dir').value.trim() || '/var/lib/korvarix-cluster/ollama/models';
+    document.querySelectorAll('.ph').forEach(el => {
+      const k = el.dataset.v;
+      el.textContent = k === 'ip' ? ip : k === 'net' ? net : k === 'dir' ? dir : el.textContent;
+    });
+    localStorage.setItem('kv2_storage_vars', JSON.stringify({ip, net, dir}));
+  }
+  document.querySelectorAll('.vars input').forEach(i => i.addEventListener('input', applyVars));
+  try { const s = JSON.parse(localStorage.getItem('kv2_storage_vars') || '{}');
+    if (s.ip) document.getElementById('v_ip').value = s.ip;
+    if (s.net) document.getElementById('v_net').value = s.net;
+    if (s.dir) document.getElementById('v_dir').value = s.dir; } catch (e) {}
+  applyVars();
+  const boxes = document.querySelectorAll('input[data-chk]');
+  function upd() {
+    const done = [...boxes].filter(b => b.checked).length;
+    document.getElementById('progress').textContent = done + ' / ' + boxes.length + ' steps checked';
+    localStorage.setItem('kv2_storage_progress', done);
+  }
+  boxes.forEach(b => { b.addEventListener('change', upd);
+    if (localStorage.getItem('kv2_' + (b.closest('.step').querySelector('.num')?.textContent ?? '') ) === '1') b.checked = true; });
+  upd();
+</script>
+</body>
+</html>

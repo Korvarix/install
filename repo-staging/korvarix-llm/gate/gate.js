@@ -27,6 +27,12 @@ import { pipeline } from "node:stream/promises";
 import { envString, envNumber } from "../lib/@korvarix/shared/env.js";
 
 const PORT = envNumber("GATE_PORT", 8211);
+// Gate mode: "sso" (default, korvarix.com SSO + trusted headers) or "open"
+// (no SSO: OWUI's native auth + API keys face the world; the gate stays in the
+// path for the LB (:8212) and the per-identity concurrency cap, but performs
+// NO identity operations - it neither requires nor injects any credentials).
+// Rollback = set GATE_SSO_MODE=sso, restore the 3 WEBUI_AUTH_* lines, restart.
+const SSO_MODE = envString("GATE_SSO_MODE", "sso") === "open" ? "open" : "sso";
 // Open WebUI upstream: "open-webui" hostname inside the docker network when
 // the gate runs containerized; 127.0.0.1 when it runs on the host.
 // NOTE the port: the container LISTENS on 8080 (its internal port); WEBUI_PORT
@@ -41,10 +47,12 @@ const GATE_KEY = envString("LLM_SSO_KEY", "");
 const SESSION_SECRET = envString("WEBUI_SECRET_KEY", "");
 const SESSION_TTL_S = envNumber("GATE_SESSION_TTL_S", 7 * 86400);
 // Open WebUI trusted-header names - MUST match the .env the container runs with
+// (open mode: headers are neither required nor injected; names kept for the
+// x-korvarix-* inbound strip below)
 const H_EMAIL = envString("WEBUI_AUTH_TRUSTED_EMAIL_HEADER", "X-Korvarix-Email");
 const H_NAME = envString("WEBUI_AUTH_TRUSTED_NAME_HEADER", "X-Korvarix-Name");
 
-if (!GATE_KEY) {
+if (SSO_MODE === "sso" && !GATE_KEY) {
   console.error("[gate] LLM_SSO_KEY is required (shared with korvarix-base) - refusing to start");
   process.exit(1);
 }
@@ -52,7 +60,19 @@ if (!SESSION_SECRET) {
   console.error("[gate] WEBUI_SECRET_KEY is required (same value Open WebUI runs with) - refusing to start");
   process.exit(1);
 }
-if (!envString("OPEN_WEBUI_API_KEY", "").trim()) {
+if (SSO_MODE === "open") {
+  // open-mode safety: trusted headers MUST NOT be trusted by OWUI when the
+  // gate no longer owns identity - the .env lines must be commented out
+  if (envString("WEBUI_AUTH_TRUSTED_EMAIL_HEADER", "").trim()) {
+    console.error("[gate] GATE_SSO_MODE=open but WEBUI_AUTH_TRUSTED_EMAIL_HEADER is still set in the environment - refusing to start (comment it out in .env; the gate would otherwise let forged header sign-ins through)");
+    process.exit(1);
+  }
+  if (envString("WEBUI_AUTH_SIGNOUT_REDIRECT_URL", "").trim()) {
+    console.error("[gate] GATE_SSO_MODE=open but WEBUI_AUTH_SIGNOUT_REDIRECT_URL is still set - refusing to start (comment it out in .env)");
+    process.exit(1);
+  }
+}
+if (SSO_MODE === "sso" && !envString("OPEN_WEBUI_API_KEY", "").trim()) {
   console.error("[gate] OPEN_WEBUI_API_KEY is not set - avatar sync is disabled (create an API key in OWUI: Settings -> Account -> API Keys)");
 }
 
@@ -207,8 +227,12 @@ function proxyHeaders(session, extra = {}) {
   return {
     // strip inbound copies of the trusted headers - clients must never set them
     ...Object.fromEntries(Object.entries(extra).filter(([k]) => !k.startsWith("x-korvarix-"))),
-    [H_EMAIL]: session.email,
-    [H_NAME]: encodeURIComponent(session.name ?? session.email),
+    // sso mode: inject the trusted headers OWUI signs users in with.
+    // open mode: inject NOTHING - identity belongs to OWUI (its own login +
+    // API keys); the x-korvarix-* strip above is the only identity concern.
+    ...(SSO_MODE === "sso" && session
+      ? { [H_EMAIL]: session.email, [H_NAME]: encodeURIComponent(session.name ?? session.email) }
+      : {}),
     "X-Forwarded-For": "",
   };
 }
@@ -248,7 +272,14 @@ const server = createServer(async (req, res) => {
   const url = new URL(req.url ?? "/", `http://127.0.0.1:${PORT}`);
 
   // ---- login completion: /sso/complete?code=... ----------------------------
-  if (url.pathname === "/sso/complete" && req.method === "GET") {
+  // open mode: SSO is retired - the endpoint is INERT (plain 302 to the panel
+  // root; korvarix-base keeps the button alive until its own retirement and
+  // visitors just land on OWUI's login page).
+  if (url.pathname === "/sso/complete" && req.method === "GET" && SSO_MODE === "open") {
+    res.writeHead(302, { Location: "/" });
+    return res.end();
+  }
+  if (url.pathname === "/sso/complete" && req.method === "GET" && SSO_MODE === "sso") {
     const code = (url.searchParams.get("code") ?? "").trim();
     if (!code) {
       res.writeHead(400, { "Content-Type": "text/html" });
@@ -295,8 +326,11 @@ const server = createServer(async (req, res) => {
   // only becomes functional for signed-in users (its API calls stay gated).
   const ASSET_PREFIXES = ["/_app/", "/static/", "/assets/", "/manifest.json", "/favicon", "/robots.txt"];
   const isStaticAsset = ASSET_PREFIXES.some((p) => url.pathname.startsWith(p));
-  const session = verify(readCookie(req, "korvarix_llm") ?? "");
-  if (!session && !isStaticAsset) {
+  // sso mode: the gate session is REQUIRED (browser bounce otherwise).
+  // open mode: no gate session - everything proxies verbatim; OWUI's own
+  // auth (login form + API keys) faces the world directly.
+  const session = SSO_MODE === "sso" ? verify(readCookie(req, "korvarix_llm") ?? "") : null;
+  if (SSO_MODE === "sso" && !session && !isStaticAsset) {
     // not signed in. Redirecting to korvarix.com/login?next=<panel> would
     // LOOP: after sign-in the SPA router cannot navigate cross-origin, and
     // even if it could, the gate would bounce again (the SSO mint never ran).
@@ -306,10 +340,10 @@ const server = createServer(async (req, res) => {
     res.writeHead(302, { Location: `${SITE_URL}/account/llm-launch?gate=${encodeURIComponent(PUBLIC_URL)}` });
     return res.end();
   }
-  // sessionless asset proxy: no trusted headers can be injected (no identity),
-  // forward client cookies as-is (minus the gate cookie) so OWUI sees a
-  // signed-in browser's own token cookie when present
-  if (!session && isStaticAsset) {
+  // sessionless asset proxy (sso mode with no session; also unreachable in
+  // open mode since `session` is always null there - but the guard keeps the
+  // branch harmless): forward client cookies as-is (minus the gate cookie)
+  if (SSO_MODE === "sso" && !session && isStaticAsset) {
     const chunks0 = [];
     for await (const chunk of req) chunks0.push(chunk);
     const body0 = Buffer.concat(chunks0);
@@ -382,14 +416,35 @@ const server = createServer(async (req, res) => {
     }
   }
 
-  // ---- everything else: require a gate session, proxy with trusted headers --
+  // ---- everything else: proxy (sso: require session + trusted headers) ------
 
-  // LLM generation requests are capped per user BEFORE the body is read - a
-  // 429 costs nothing and rejected requests never reach Open WebUI.
+  // LLM generation requests are capped per IDENTITY before the body is read -
+  // a 429 costs nothing and rejected requests never reach Open WebUI.
+  // sso mode: identity = the gate session's email.
+  // open mode: identity = a stable hash of the caller's credential -
+  //   Authorization: Bearer <key> (API clients) or the OWUI token= cookie
+  //   (browsers); anonymous traffic shares one "anon" bucket.
   const isLLMGen = req.method === "POST" && LLM_PATH_RE.test(url.pathname.replace(/\/+$/, ""));
-  const slotAcquired = !isLLMGen || acquireSlot(session.email);
+  const browserCookies = String(req.headers.cookie ?? "")
+    .split(";")
+    .map((c) => c.trim())
+    .filter((c) => c && !c.startsWith("korvarix_llm="));
+  const hasTokenCookie = browserCookies.some((c) => c.startsWith("token="));
+  let identityKey;
+  if (SSO_MODE === "sso") {
+    identityKey = session.email;
+  } else {
+    const auth = String(req.headers.authorization ?? "");
+    const bearer = auth.startsWith("Bearer ") ? auth.slice(7).trim() : "";
+    const tokenCookie = browserCookies.find((c) => c.startsWith("token="))?.slice(6) ?? "";
+    const raw = bearer || tokenCookie;
+    identityKey = raw
+      ? "id-" + createHmac("sha256", SESSION_SECRET).update(raw).digest("hex").slice(0, 32)
+      : "anon";
+  }
+  const slotAcquired = !isLLMGen || acquireSlot(identityKey);
   if (!slotAcquired) {
-    log(`conc-cap ${session.email} ${url.pathname} rejected (${MAX_USER_CONC} in-flight)`);
+    log(`conc-cap ${identityKey} ${url.pathname} rejected (${MAX_USER_CONC} in-flight)`);
     res.writeHead(429, {
       "Content-Type": "application/json",
       "Retry-After": "5",
@@ -403,7 +458,7 @@ const server = createServer(async (req, res) => {
   const releaseOnce = () => {
     if (slotReleased) return;
     slotReleased = true;
-    releaseSlot(session.email);
+    releaseSlot(identityKey);
   };
   if (isLLMGen) res.on("close", releaseOnce);
 
@@ -414,12 +469,8 @@ const server = createServer(async (req, res) => {
 
   const headers = { ...proxyHeaders(session) };
   // browser cookies ARE forwarded (minus the gate's own) - the SPA needs its
-  // OWUI `token` cookie on every request for signed-in state; the trusted
-  // headers only cover the signin endpoint, not asset/API auth
-  const browserCookies = String(req.headers.cookie ?? "")
-    .split(";")
-    .map((c) => c.trim())
-    .filter((c) => c && !c.startsWith("korvarix_llm="));
+  // OWUI `token` cookie on every request for signed-in state (sso mode) and
+  // open mode relies on it entirely for browser auth
   if (browserCookies.length) headers["cookie"] = browserCookies.join("; ");
   for (const [k, v] of Object.entries(req.headers)) {
     // accept-encoding: DO NOT forward the browser's list. The gate fetches with
@@ -433,14 +484,15 @@ const server = createServer(async (req, res) => {
   }
   if (body.length) headers["content-length"] = String(body.length);
 
-  // first document load: make sure the browser's OWUI session is ACTUALLY
-  // valid before proxying. A stale token= cookie (issued before a container
-  // recreate / secret rotation) makes OWUI render its login page while the
-  // gate happily forwards it - so when a token cookie is present we probe
-  // /api/v1/auths/ with it and re-sign-in (trusted headers) if it's dead.
+  // first document load (SSO MODE ONLY): make sure the browser's OWUI session
+  // is ACTUALLY valid before proxying. A stale token= cookie (issued before a
+  // container recreate / secret rotation) makes OWUI render its login page
+  // while the gate happily forwards it - so when a token cookie is present we
+  // probe /api/v1/auths/ with it and re-sign-in (trusted headers) if it's dead.
+  // open mode: the gate performs NO identity operations - browsers hit OWUI's
+  // own login page natively, stale cookies are OWUI's problem, skip the dance.
   let cookieOverride = null;
-  const hasTokenCookie = browserCookies.some((c) => c.startsWith("token="));
-  if (wantsDocument(req, url)) {
+  if (SSO_MODE === "sso" && wantsDocument(req, url)) {
     // probe with a short budget - it must never hold a page load hostage
     let sessionLive = false;
     if (hasTokenCookie) {
@@ -593,6 +645,9 @@ const OLLAMA_NODES = envString("OLLAMA_NODES", "")
       healthyUntil: 0, // 0 = assumed healthy; epoch-ms while cooling down
       active: 0,
       label: `${u.host}`,
+      lastError: null, // last failure string (for /lb/status)
+      lastErrorAt: null,
+      okCount: 0, // successful requests served
     };
   });
 const LB_PORT = envNumber("GATE_LB_PORT", 8212);
@@ -612,7 +667,27 @@ if (OLLAMA_NODES.length) {
     return pool.reduce((best, n) => (n.active < best.active ? n : best), pool[0]);
   }
 
+  // LB self-diagnostics: GET /lb/status lists every node with cooldown state,
+  // in-flight count, success count and last error - the "all LLM nodes
+  // unreachable" mystery becomes a single curl.
   const lbServer = createServer(async (req, res) => {
+    if (req.url === "/lb/status" && req.method === "GET") {
+      const now = Date.now();
+      const body = {
+        now: new Date(now).toISOString(),
+        nodes: OLLAMA_NODES.map((n) => ({
+          url: n.base,
+          state: n.healthyUntil > now ? "cooldown" : "healthy",
+          cooldownRemainingS: Math.max(0, Math.ceil((n.healthyUntil - now) / 1000)),
+          active: n.active,
+          okCount: n.okCount,
+          lastError: n.lastError,
+          lastErrorAt: n.lastErrorAt,
+        })),
+      };
+      res.writeHead(200, { "Content-Type": "application/json" });
+      return res.end(JSON.stringify(body, null, 2));
+    }
     // buffer the request body - Ollama chat payloads are small JSON; a
     // buffered body lets us replay it against a second node on failover
     const chunks = [];
@@ -655,6 +730,9 @@ if (OLLAMA_NODES.length) {
           rq.end();
         });
         // headers are in: this node took the request - stream it verbatim
+        node.okCount += 1;
+        node.lastError = null;
+        node.lastErrorAt = null;
         res.writeHead(upstream.statusCode, upstream.headers);
         if (upstream.method !== "HEAD" && upstream.statusCode !== 204) {
           await pipeline(upstream, res);
@@ -673,6 +751,8 @@ if (OLLAMA_NODES.length) {
         const msg = String(err?.message ?? err);
         const isConnectFail = ["ECONNREFUSED", "EHOSTUNREACH", "ENETUNREACH", "ECONNRESET", "ETIMEDOUT"].includes(code) || msg === "upstream connect timeout";
         if (isConnectFail) node.healthyUntil = Date.now() + LB_FAIL_COOLDOWN_MS;
+        node.lastError = `${err?.code ?? msg}`;
+        node.lastErrorAt = new Date().toISOString();
         lbLog(`node ${node.label} failed (${err?.code ?? msg})${isConnectFail ? ` - cooling down ${LB_FAIL_COOLDOWN_MS / 1000}s` : " - no cooldown (busy, not down)"}`);
         if (res.headersSent) {
           if (!res.writableEnded) res.end();
@@ -696,4 +776,6 @@ if (OLLAMA_NODES.length) {
 // docker (the gateway/proxy reaches it over the bridge network; the port is
 // only published to 127.0.0.1 on the host side)
 const BIND_HOST = envString("GATE_BIND", "127.0.0.1");
-server.listen(PORT, BIND_HOST, () => log(`korvarix-llm gate on ${BIND_HOST}:${PORT} -> open-webui ${WEBUI_HOST}:${WEBUI_INTERNAL_PORT}`));
+server.listen(PORT, BIND_HOST, () =>
+  log(`korvarix-llm gate [${SSO_MODE} mode] on ${BIND_HOST}:${PORT} -> open-webui ${WEBUI_HOST}:${WEBUI_INTERNAL_PORT}`)
+);

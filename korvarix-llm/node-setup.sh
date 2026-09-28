@@ -20,7 +20,10 @@
 #   --instances N    number of Ollama instances         (default: 8)
 #   --base-port P    first port, ports are consecutive  (default: 11430)
 #   --num-parallel N OLLAMA_NUM_PARALLEL per instance   (default: 1)
-#   --keep-alive S   OLLAMA_KEEP_ALIVE                  (default: 5m)
+#   --keep-alive S   OLLAMA_KEEP_ALIVE                  (default: -1 = never unload)
+#   --ctx N          OLLAMA_CONTEXT_LENGTH (KV cap)     (default: 16384)
+#   --warm-cron      install the hourly warm-keeper self-heal cron (warm-keeper.sh)
+#   --warm-model N   model the warm-keeper pins         (default: oroboros-labs/claude-fable5:latest)
 #   --retire-legacy  also disable --now korvarix-llama-server (the 64-thread RPC llama-server)
 #   --firewall       open the port range for the VPN subnet via ufw (only if ufw exists)
 #   --restart        just restart the existing instances (config unchanged)
@@ -33,7 +36,10 @@ BIND_IP=""
 INSTANCES=8
 BASE_PORT=11430
 NUM_PARALLEL=1
-KEEP_ALIVE="5m"
+KEEP_ALIVE="-1"
+CTX=16384
+WARM_CRON=0
+WARM_MODEL="oroboros-labs/claude-fable5:latest"
 RETIRE_LEGACY=0
 FIREWALL=0
 RESTART_ONLY=0
@@ -53,6 +59,9 @@ while (($#)); do
     --base-port)    BASE_PORT="$2"; shift 2 ;;
     --num-parallel) NUM_PARALLEL="$2"; shift 2 ;;
     --keep-alive)   KEEP_ALIVE="$2"; shift 2 ;;
+    --ctx)          CTX="$2"; shift 2 ;;
+    --warm-cron)    WARM_CRON=1; shift ;;
+    --warm-model)   WARM_MODEL="$2"; shift 2 ;;
     --retire-legacy) RETIRE_LEGACY=1; shift ;;
     --firewall)     FIREWALL=1; shift ;;
     --restart)      RESTART_ONLY=1; shift ;;
@@ -129,7 +138,12 @@ Environment=OLLAMA_MODELS=$HOME_DIR/models
 Environment=HOME=$HOME_DIR
 Environment=OLLAMA_NUM_PARALLEL=$NUM_PARALLEL
 Environment=OLLAMA_MAX_LOADED_MODELS=1
+# -1 = models never unload (an idle instance must not trigger a 20GB NFS reload)
 Environment=OLLAMA_KEEP_ALIVE=$KEEP_ALIVE
+# KV-cache cap: bounds prompt-eval time + RAM per runner (131k default was fatal)
+Environment=OLLAMA_CONTEXT_LENGTH=$CTX
+# read-only models mount: boot-time prune would fail + crash-loop the daemon
+Environment=OLLAMA_NOPRUNE=true
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
@@ -191,6 +205,25 @@ if ((RETIRE_LEGACY)); then
   else
     log "no legacy korvarix-llama-server unit found - nothing to retire"
   fi
+fi
+
+# --- optional: hourly warm-keeper self-heal cron --------------------------------
+# requires warm-keeper.sh next to this script (uploaded with the repo folder)
+if ((WARM_CRON)); then
+  [[ -f "$HERE/warm-keeper.sh" ]] || die "--warm-cron needs warm-keeper.sh in $HERE (upload the full repo folder)"
+  log "installing warm-keeper (hourly cron, model: $WARM_MODEL)"
+  run install -m 755 "$HERE/warm-keeper.sh" /usr/local/sbin/korvarix-warm-keeper.sh
+  run mkdir -p /var/log/korvarix
+  if ((DRY_RUN)); then
+    log "[dry-run] would write /etc/cron.d/korvarix-warm (hourly, ports ${ports[0]}-${ports[-1]})"
+  else
+    cat > /etc/cron.d/korvarix-warm <<EOF
+# korvarix warm-keeper: reload any instance whose model went cold (hourly)
+17 * * * * root /usr/local/sbin/korvarix-warm-keeper.sh --model "$WARM_MODEL" --ports "${ports[*]}" >> /var/log/korvarix/warm-keeper.log 2>&1
+EOF
+    chmod 644 /etc/cron.d/korvarix-warm
+  fi
+  log "warm-keeper installed - first pass will run at minute 17 of the next hour (or run it now: /usr/local/sbin/korvarix-warm-keeper.sh --model \"$WARM_MODEL\" --ports \"${ports[*]}\")"
 fi
 
 # --- 6. what to add on the frontend -------------------------------------------

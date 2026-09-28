@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>korvarix v2 — Worker Server Setup</title>
+<style>
+  :root { --ok:#16a34a; --warn:#d97706; --err:#dc2626; --accent:#2563eb; }
+  * { box-sizing: border-box; }
+  body { font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+         margin: 0; background:#f8fafc; color:#0f172a; line-height:1.55; }
+  header { background:#0f172a; color:#fff; padding: 24px 32px; }
+  header h1 { margin:0; font-size: 22px; }
+  header p { margin: 6px 0 0; color:#94a3b8; font-size: 14px; }
+  main { max-width: 900px; margin: 0 auto; padding: 24px 16px 80px; }
+  .vars { background:#fff; border:1px solid #e2e8f0; border-radius:10px; padding:16px 20px; margin: 20px 0; }
+  .vars input { width: 260px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size:14px;
+                padding:6px 10px; border:1px solid #cbd5e1; border-radius:6px; margin: 2px 0 8px; display:block; }
+  .step { background:#fff; border:1px solid #e2e8f0; border-radius:10px; margin: 18px 0; overflow:hidden; }
+  .step h2 { margin:0; padding: 12px 20px; font-size:16px; background:#eff6ff; border-bottom:1px solid #dbeafe; cursor:pointer; user-select:none; }
+  .step h2 .num { color: var(--accent); font-weight:700; margin-right:8px; }
+  .step .body { padding: 14px 20px 18px; }
+  .step.closed .body { display:none; }
+  .step h2::after { content: "▾"; float:right; color:#94a3b8; }
+  .step.closed h2::after { content:"▸"; }
+  code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  pre { background:#0f172a; color:#e2e8f0; padding: 14px 16px; border-radius: 8px; overflow-x:auto;
+        font-size: 13px; line-height:1.5; position:relative; margin: 10px 0; }
+  pre .ph { color:#fbbf24; font-weight:600; }
+  .copy { position:absolute; top:8px; right:10px; background:#334155; color:#e2e8f0; border:0; border-radius:6px;
+          font-size:11px; padding: 3px 10px; cursor:pointer; }
+  .copy:hover { background:#475569; }
+  .chk { display:flex; gap:10px; align-items:flex-start; padding: 6px 0; }
+  .chk input { margin-top: 4px; transform: scale(1.3); accent-color: var(--ok); }
+  .note { border-left: 4px solid var(--accent); background:#eff6ff; padding: 8px 14px; border-radius: 0 8px 8px 0; font-size: 14px; margin: 10px 0; }
+  .warnbox { border-left: 4px solid var(--warn); background:#fffbeb; padding: 8px 14px; border-radius: 0 8px 0 0; margin: 10px 0; font-size: 14px; }
+  table { border-collapse: collapse; width:100%; font-size:14px; margin: 8px 0; }
+  th, td { border:1px solid #e2e8f0; padding: 6px 10px; text-align:left; }
+  th { background:#f1f5f9; }
+  .progress { position:sticky; top:0; z-index:5; background:#f8fafc; padding:8px 4px; font-size:13px; color:#475569; border-bottom:1px solid #e2e8f0; }
+</style>
+</head>
+<body>
+<header>
+  <h1>korvarix v2 — Worker Server Setup</h1>
+  <p>4 single-slot Ollama instances, model files via NFS from the storage server, warm on join. Run this AFTER the storage server is up.</p>
+</header>
+<main>
+<div class="progress" id="progress">0 / 0 steps checked</div>
+
+<div class="vars">
+  <strong>Fill these in first</strong> (used to build every command below):
+  <label style="display:block;margin-top:8px">This worker's VPN IP: <input id="v_ip" placeholder="10.8.0.21"></label>
+  <label style="display:block">Storage server VPN IP: <input id="v_stor" placeholder="10.8.0.20"></label>
+  <label style="display:block">Instances: <input id="v_n" value="4"></label>
+  <label style="display:block">Threads per instance (num_thread): <input id="v_thr" value="16"></label>
+  <label style="display:block">Warmup model: <input id="v_model" value="oroboros-labs/claude-fable5:latest"></label>
+</div>
+
+<div class="step">
+  <h2><span class="num">0</span>RAM math — pick the instance count before anything</h2>
+  <div class="body">
+    <pre>free -h                    # total RAM
+df -h /                    # disk only needs the binary (~2GB) - models are NFS</pre>
+    <table>
+      <tr><th>Model size on disk</th><th>Max instances (128GB RAM)</th><th>Threads each</th><th>Cores used</th></tr>
+      <tr><td>~20 GB (fable5, 27.3B IQ2)</td><td>4 (78 GB loaded)</td><td>16</td><td>64</td></tr>
+      <tr><td>~10 GB (14B class)</td><td>6</td><td>10</td><td>60</td></tr>
+      <tr><td>~5 GB (8B class)</td><td>8</td><td>8</td><td>64</td></tr>
+    </table>
+    <p class="warnbox">Rule: instances × model GB must stay ≤ RAM − 25 GB (OS + KV cache). Never repeat the 8×20GB > RAM OOM era.</p>
+    <label class="chk"><input type="checkbox" data-chk> instance count chosen from the table</label>
+  </div>
+</div>
+
+<div class="step">
+  <h2><span class="num">1</span>WireGuard — join this box to the tunnel</h2>
+  <div class="body">
+    <p>Interface box → issue a peer named e.g. <code>worker2</code>, upload the .conf here:</p>
+    <pre>./korvarix-cluster.sh vpn join <span class="ph" data-v="peer">/path/to/worker-peer.conf</span>
+ip -4 addr show wg0        # this box's VPN IP = <span class="ph" data-v="ip">10.8.0.21</span></pre>
+    <label class="chk"><input type="checkbox" data-chk> wg0 up, handshake OK, VPN IP noted</label>
+  </div>
+</div>
+
+<div class="step">
+  <h2><span class="num">2</span>Retire anything legacy from the v1 era (only on converted boxes)</h2>
+  <div class="body">
+    <pre>systemctl list-units | grep -iE 'ollama|llama'    # what is running?
+# old single daemon / legacy llama.cpp server / rpc-server:
+systemctl disable --now korvarix-ollama 2>/dev/null || true
+systemctl disable --now korvarix-llama-server 2>/dev/null || true
+./korvarix-cluster.sh uninstall rpc 2>/dev/null || true
+pkill -f 'ollama serve' 2>/dev/null || true; sleep 1</pre>
+    <p class="note">On a fresh v2 box nothing of these exists — the commands simply no-op.</p>
+    <label class="chk"><input type="checkbox" data-chk> no legacy ollama/llama/rpc services left enabled</label>
+  </div>
+</div>
+
+<div class="step">
+  <h2><span class="num">3</span>NFS mount of the storage models dir</h2>
+  <div class="body">
+    <pre>apt-get install -y nfs-common
+MNT=/var/lib/korvarix-cluster/ollama/models
+mkdir -p "$MNT"
+# local leftovers (converted boxes only): remove AFTER the mount is down
+mountpoint -q "$MNT" && umount "$MNT" && rm -rf "$MNT" && mkdir -p "$MNT"
+
+mount -t nfs -o ro <span class="ph" data-v="stor">10.8.0.20</span>:/var/lib/korvarix-cluster/ollama/models "$MNT"
+grep -q 'korvarix-cluster/ollama/models' /etc/fstab || \
+  echo '<span class="ph" data-v="stor">10.8.0.20</span>:/var/lib/korvarix-cluster/ollama/models '"$MNT"' nfs ro,defaults,_netdev,noatime 0 0' >> /etc/fstab
+mount | grep korvarix           # expect: ...(ro,...
+ls "$MNT"/manifests/registry.ollama.ai/oroboros-labs/   # fable manifests visible</pre>
+    <p class="warnbox"><code>ro</code> everywhere: workers never write here (pulls happen on storage). UID parity: <code>id korvarix-ollama</code> must show the same numeric uid as on storage — if not: <code>usermod -u &lt;storage-uid&gt; korvarix-ollama</code>.</p>
+    <label class="chk"><input type="checkbox" data-chk> NFS mounted ro, manifests visible</label>
+    <label class="chk"><input type="checkbox" data-chk> korvarix-ollama UID matches storage's</label>
+    <label class="chk"><input type="checkbox" data-chk> fstab line present with _netdev</label>
+  </div>
+</div>
+
+<div class="step">
+  <h2><span class="num">4</span>Instance template + enable N instances</h2>
+  <div class="body">
+    <pre>N=<span class="ph" data-v="n">4</span>
+cat > /etc/systemd/system/korvarix-ollama@.service <<'EOF'
+[Unit]
+Description=korvarix sandboxed Ollama (port %i, 1 request / single slot)
+After=network-online.target
+
+[Service]
+Type=simple
+User=korvarix-ollama
+Group=korvarix-ollama
+ExecStart=/var/lib/korvarix-cluster/ollama/bin/ollama serve
+Environment=OLLAMA_HOST=<span class="ph" data-v="ip">10.8.0.21</span>:%i
+Environment=OLLAMA_MODELS=/var/lib/korvarix-cluster/ollama/models
+Environment=HOME=/var/lib/korvarix-cluster/ollama
+Environment=OLLAMA_NUM_PARALLEL=1
+Environment=OLLAMA_MAX_LOADED_MODELS=1
+Environment=OLLAMA_KEEP_ALIVE=-1
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+ReadWritePaths=/var/lib/korvarix-cluster/ollama/models /var/lib/korvarix-cluster/ollama
+LimitMEMLOCK=64M
+LimitNOFILE=65536
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+systemd-analyze verify /etc/systemd/system/korvarix-ollama@.service   # silence = OK
+systemctl daemon-reload
+
+BASE=11430
+for i in $(seq 0 $((N-1))); do
+  p=$((BASE+i))
+  # free the port first (idempotent)
+  pid=$(ss -tlnpH "sport = :$p" | grep -oP 'pid=\K[0-9]+' | head -1)
+  [ -n "$pid" ] && ! grep -qs "korvarix-ollama@$p" /proc/$pid/cgroup && kill "$pid" && sleep 1
+  systemctl enable --now "korvarix-ollama@$p"
+done
+
+for i in $(seq 0 $((N-1))); do
+  p=$((BASE+i))
+  curl -m 3 -s "http://<span class="ph" data-v="ip">10.8.0.21</span>:$p/api/version" | grep -q version && echo "$p ok" || echo "$p FAIL"
+done</pre>
+    <p class="note">One request per instance (<code>NUM_PARALLEL=1</code>, <code>MAX_LOADED=1</code>), <code>KEEP_ALIVE=-1</code> = models never unload (the NFS model-load stampede never happens again). Port range: 11430 + (N−1).</p>
+    <label class="chk"><input type="checkbox" data-chk> template written + verified</label>
+    <label class="chk"><input type="checkbox" data-chk> all N instances answer /api/version</label>
+  </div>
+</div>
+
+<div class="step">
+  <h2><span class="num">5</span>Warmup — pre-load the model (permanent)</h2>
+  <div class="body">
+    <pre>MODEL=<span class="ph" data-v="model">oroboros-labs/claude-fable5:latest</span>
+BASE=11430; N=<span class="ph" data-v="n">4</span>
+for i in $(seq 0 $((N-1))); do
+  curl -s "http://<span class="ph" data-v="ip">10.8.0.21</span>:$((BASE+i))/api/generate" \
+    -d "{\"model\":\"$MODEL\",\"prompt\":\"\",\"keep_alive\":-1}" >/dev/null &
+done; wait
+# first load pulls ~20 GB over NFS per instance — run in a screen/tmux and let it finish
+for i in $(seq 0 $((N-1))); do
+  printf "%s " "$((BASE+i))"; curl -s "http://<span class="ph" data-v="ip">10.8.0.21</span>:$((BASE+i))/api/ps" | grep -c claude-fable5
+done    # expect N lines of "1"</pre>
+    <label class="chk"><input type="checkbox" data-chk> all instances show the model in /api/ps (count = 1 each)</label>
+  </div>
+</div>
+
+<div class="step">
+  <h2><span class="num">6</span>Register on the frontend (load-balancer pool)</h2>
+  <div class="body">
+    <pre># on the frontend box (korvarix-llm folder):
+./add-node.sh <span class="ph" data-v="ip">10.8.0.21</span> --instances <span class="ph" data-v="n">4</span> --apply
+# verify from the frontend:
+curl -m 5 -s http://127.0.0.1:8212/api/version; echo
+docker logs korvarix-llm-gate --tail 20 2>&1 | grep '\[lb\]' | tail -5</pre>
+    <p class="note">A chat test through the LB should now land on this worker whenever it is the least-busy endpoint. The thinking stream shows in OWUI per chat.</p>
+    <label class="chk"><input type="checkbox" data-chk> worker registered, LB answers, chat lands here</label>
+  </div>
+</div>
+
+<div class="step">
+  <h2><span class="num">7</span>OWUI per-request threads (one-time, global)</h2>
+  <div class="body">
+    <p>Admin Panel → Settings → Models → edit the fable5 model → Advanced Params → <code>num_thread</code> = <span class="ph" data-v="thr">16</span>. Per-request, applies live — this is the "cores per task" lever. With N=4 × 16 threads a worker uses all 64 cores at full concurrency.</p>
+    <label class="chk"><input type="checkbox" data-chk> num_thread set in OWUI model params</label>
+  </div>
+</div>
+
+<div class="step">
+  <h2><span class="num">8</span>Firewall — instance ports from the VPN only</h2>
+  <div class="body">
+    <pre>ufw allow from <span class="ph" data-v="net">10.8.0.0/24</span> to any port 11430:11433 proto tcp 2>/dev/null \
+  || iptables -I INPUT -p tcp -s <span class="ph" data-v="net">10.8.0.0/24</span> --dport 11430:11433 -j ACCEPT</pre>
+    <label class="chk"><input type="checkbox" data-chk> ports reachable from VPN only</label>
+  </div>
+</div>
+
+</main>
+<script>
+  document.querySelectorAll('.step h2').forEach(h => h.addEventListener('click', () => h.parentElement.classList.toggle('closed')));
+  function applyVars() {
+    const ip = document.getElementById('v_ip').value.trim() || '10.8.0.21';
+    const stor = document.getElementById('v_stor').value.trim() || '10.8.0.20';
+    const n = document.getElementById('v_n').value.trim() || '4';
+    const thr = document.getElementById('v_thr').value.trim() || '16';
+    const model = document.getElementById('v_model').value.trim() || 'oroboros-labs/claude-fable5:latest';
+    const net = document.getElementById('v_net').value.trim() || '10.8.0.0/24';
+    const lastPort = String(11430 + (parseInt(n, 10) || 4) - 1);
+    document.querySelectorAll('.ph').forEach(el => {
+      const k = el.dataset.v;
+      el.textContent = k === 'ip' ? ip : k === 'stor' ? stor : k === 'n' ? n
+        : k === 'thr' ? thr : k === 'model' ? model : k === 'net' ? net
+        : k === 'ports' ? '11430:' + lastPort : el.textContent;
+    });
+    localStorage.setItem('kv2_worker_vars', JSON.stringify({ip, stor, n, thr, model, net}));
+  }
+  document.querySelectorAll('.vars input').forEach(i => i.addEventListener('input', applyVars));
+  try { const s = JSON.parse(localStorage.getItem('kv2_worker_vars') || '{}');
+    if (s.ip) document.getElementById('v_ip').value = s.ip;
+    if (s.stor) document.getElementById('v_stor').value = s.stor;
+    if (s.n) document.getElementById('v_n').value = s.n;
+    if (s.thr) document.getElementById('v_thr').value = s.thr;
+    if (s.model) document.getElementById('v_model').value = s.model;
+    if (s.net) document.getElementById('v_net').value = s.net; } catch (e) {}
+  applyVars();
+  const boxes = document.querySelectorAll('input[data-chk]');
+  function upd() {
+    const done = [...boxes].filter(b => b.checked).length;
+    document.getElementById('progress').textContent = done + ' / ' + boxes.length + ' steps checked';
+  }
+  boxes.forEach(b => b.addEventListener('change', upd));
+  upd();
+</script>
+</body>
+</html>

@@ -194,9 +194,12 @@ gate_env() {
     printf '# open webui 302-forwards profile images to their origin URL (korvarix CDN)\n' >> .env
     printf 'ENABLE_PROFILE_IMAGE_URL_FORWARDING=true\n' >> .env
     # trusted headers: the whole point of the gate - enable them now
-    sed -i 's|^# WEBUI_AUTH_TRUSTED_EMAIL_HEADER=|WEBUI_AUTH_TRUSTED_EMAIL_HEADER=|' .env
-    sed -i 's|^# WEBUI_AUTH_TRUSTED_NAME_HEADER=|WEBUI_AUTH_TRUSTED_NAME_HEADER=|' .env
-    sed -i 's|^# WEBUI_AUTH_SIGNOUT_REDIRECT_URL=|WEBUI_AUTH_SIGNOUT_REDIRECT_URL=|' .env
+    # (ONLY in sso mode; open mode requires them commented out - see below)
+    if [[ "${GATE_SSO_MODE:-sso}" != "open" ]]; then
+      sed -i 's|^# WEBUI_AUTH_TRUSTED_EMAIL_HEADER=|WEBUI_AUTH_TRUSTED_EMAIL_HEADER=|' .env
+      sed -i 's|^# WEBUI_AUTH_TRUSTED_NAME_HEADER=|WEBUI_AUTH_TRUSTED_NAME_HEADER=|' .env
+      sed -i 's|^# WEBUI_AUTH_SIGNOUT_REDIRECT_URL=|WEBUI_AUTH_SIGNOUT_REDIRECT_URL=|' .env
+    fi
     log "gate settings appended to .env - set LLM_SSO_KEY (same value in korvarix-base) + OPEN_WEBUI_API_KEY"
   fi
   # shellcheck disable=SC1091
@@ -232,6 +235,19 @@ gate_run() {
   fi
   gate_env
   local gport="${GATE_PORT:-$GATE_PORT_DEFAULT}"
+
+  # open mode: the gate performs no identity operations, so OWUI must NOT
+  # trust the trusted headers anymore - comment them out before the env bake.
+  # (The gate refuses to start in open mode if the env still carries them.)
+  if [[ "${GATE_SSO_MODE:-sso}" == "open" ]]; then
+    log "GATE_SSO_MODE=open - commenting out WEBUI_AUTH_* trusted-header lines (OWUI native auth only)"
+    sed -i 's|^WEBUI_AUTH_TRUSTED_EMAIL_HEADER=|# WEBUI_AUTH_TRUSTED_EMAIL_HEADER=|' .env
+    sed -i 's|^WEBUI_AUTH_TRUSTED_NAME_HEADER=|# WEBUI_AUTH_TRUSTED_NAME_HEADER=|' .env
+    sed -i 's|^WEBUI_AUTH_SIGNOUT_REDIRECT_URL=|# WEBUI_AUTH_SIGNOUT_REDIRECT_URL=|' .env
+    # re-source after the edits
+    # shellcheck disable=SC1091
+    set -a; source .env; set +a
+  fi
 
   # the gate runs as a second container on the same docker network as
   # open-webui: it reaches OWUI by container alias (no host node needed).
@@ -612,12 +628,17 @@ nginx_setup() {
   ensure_env
   local port="${WEBUI_PORT:-8210}"
   # when the gate is installed, nginx proxies to the GATE (it owns SSO +
-  # avatars and forwards to Open WebUI itself); otherwise straight to OWUI
+  # avatars and forwards to Open WebUI itself); otherwise straight to OWUI.
+  # Open mode: LLM_SSO_KEY may be absent - detect the gate via GATE_PORT.
   local proxy_target="$port"
-  if grep -q '^LLM_SSO_KEY=.\+' .env 2>/dev/null; then
+  if grep -q '^GATE_SSO_MODE=open' .env 2>/dev/null || grep -q '^LLM_SSO_KEY=.\+' .env 2>/dev/null; then
     proxy_target="${GATE_PORT:-$GATE_PORT_DEFAULT}"
     gate_ensure_env_keys
-    log "gate detected - nginx will proxy llm.korvarix.com -> 127.0.0.1:${proxy_target} (gate -> Open WebUI)"
+    if grep -q '^GATE_SSO_MODE=open' .env 2>/dev/null; then
+      log "gate detected (open mode) - nginx will proxy llm.korvarix.com -> 127.0.0.1:${proxy_target} (gate -> Open WebUI, native auth)"
+    else
+      log "gate detected - nginx will proxy llm.korvarix.com -> 127.0.0.1:${proxy_target} (gate -> Open WebUI)"
+    fi
   else
     log "no gate configured - nginx will proxy straight to Open WebUI (run './install.sh gate' for SSO)"
   fi
@@ -682,7 +703,10 @@ nginx_setup() {
     # Open WebUI directly otherwise
     local summary_target="${proxy_target}"
     local summary_label="Open WebUI"
-    if [[ "$summary_target" != "$port" ]]; then summary_label="gate (korvarix SSO) -> Open WebUI"; fi
+    if [[ "$summary_target" != "$port" ]]; then
+      if grep -q '^GATE_SSO_MODE=open' .env 2>/dev/null; then summary_label="gate (open mode) -> Open WebUI";
+      else summary_label="gate (korvarix SSO) -> Open WebUI"; fi
+    fi
     log "nginx is serving https://${LLM_DOMAIN} -> http://127.0.0.1:${summary_target} (${summary_label})"
     printf '  config:    %s\n' "$NGINX_CONF"
     printf '  renew:     certbot renew (systemd timer) + deploy hook %s\n' "$hook"
@@ -747,12 +771,14 @@ nginx_check() {
   fi
 
   # 4. upstream reachable? when the gate is installed, nginx forwards to the
-  # gate (which forwards to Open WebUI) - probe what nginx actually targets
+  # gate (which forwards to Open WebUI) - probe what nginx actually targets.
+  # Open mode: LLM_SSO_KEY may be absent, so detect the gate by GATE_PORT.
   local upstream_port="$port"
   local upstream_label="Open WebUI"
-  if grep -q '^LLM_SSO_KEY=.\+' .env 2>/dev/null; then
+  if grep -q '^GATE_SSO_MODE=open' .env 2>/dev/null || grep -q '^LLM_SSO_KEY=.\+' .env 2>/dev/null; then
     upstream_port="${GATE_PORT:-$GATE_PORT_DEFAULT}"
     upstream_label="gate (korvarix SSO)"
+    if grep -q '^GATE_SSO_MODE=open' .env 2>/dev/null; then upstream_label="gate (open mode)"; fi
   fi
   if ! nginx_probe_upstream "$upstream_port"; then
     problems+=("$upstream_label not reachable on 127.0.0.1:${upstream_port} (run: ./install.sh / ./install.sh gate)")
