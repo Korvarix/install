@@ -24,22 +24,43 @@
 #   --ctx N          OLLAMA_CONTEXT_LENGTH (KV cap)     (default: 16384)
 #   --warm-cron      install the hourly warm-keeper self-heal cron (warm-keeper.sh)
 #   --warm-model N   model the warm-keeper pins         (default: oroboros-labs/claude-fable5:latest)
+#   --warm-ports "L" ports the warm-keeper watches     (default: derived from
+#                    --instances/--base-port; use this in maint-only mode to
+#                    match an EXISTING fleet, e.g. --warm-ports "11430 11431 11432 11433")
 #   --retire-legacy  also disable --now korvarix-llama-server (the 64-thread RPC llama-server)
 #   --firewall       open the port range for the VPN subnet via ufw (only if ufw exists)
 #   --restart        just restart the existing instances (config unchanged)
 #   --dry-run        print the actions without executing
 set -euo pipefail
 
+# VERSION: bump on every script change; print it early so a stale upload is
+# visible in one glance (the stale-upload problem has bitten repeatedly).
+NODE_SETUP_VERSION="2026-09-28.8"
+# folder this script lives in (warm-keeper.sh must sit next to it)
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# warm-keeper.sh must sit next to this script; if it's missing the upload was
+# partial even for runs that don't need it (warn, don't die - --restart etc.
+# legitimately run on minimal installs)
+REPO_SELF_CHECK() {
+  if [[ ! -f "$HERE/warm-keeper.sh" ]]; then
+    printf '\033[1;33mwarn:\033[0m warm-keeper.sh not found in %s - the upload is PARTIAL or STALE\n' "$HERE"
+    printf '      (--warm-cron will fail; re-upload the full korvarix-llm folder)\n'
+  fi
+}
+
 SVC_BASE="korvarix-ollama"
 DEF_HOME="/var/lib/korvarix-cluster/ollama"
 BIND_IP=""
 INSTANCES=8
+INSTANCES_SET=0   # 1 = --instances given (topology intent)
 BASE_PORT=11430
+BASE_PORT_SET=0
 NUM_PARALLEL=1
 KEEP_ALIVE="-1"
 CTX=16384
 WARM_CRON=0
 WARM_MODEL="oroboros-labs/claude-fable5:latest"
+WARM_PORTS=""   # empty = derive from INSTANCES/BASE_PORT
 RETIRE_LEGACY=0
 FIREWALL=0
 RESTART_ONLY=0
@@ -55,13 +76,14 @@ run()  { if ((DRY_RUN)); then printf '  [dry-run] %s\n' "$*"; else "$@"; fi; }
 while (($#)); do
   case "$1" in
     --ip)           BIND_IP="$2"; shift 2 ;;
-    --instances)    INSTANCES="$2"; shift 2 ;;
-    --base-port)    BASE_PORT="$2"; shift 2 ;;
+    --instances)    INSTANCES="$2"; INSTANCES_SET=1; shift 2 ;;
+    --base-port)    BASE_PORT="$2"; BASE_PORT_SET=1; shift 2 ;;
     --num-parallel) NUM_PARALLEL="$2"; shift 2 ;;
     --keep-alive)   KEEP_ALIVE="$2"; shift 2 ;;
     --ctx)          CTX="$2"; shift 2 ;;
     --warm-cron)    WARM_CRON=1; shift ;;
     --warm-model)   WARM_MODEL="$2"; shift 2 ;;
+    --warm-ports)   WARM_PORTS="$2"; shift 2 ;;
     --retire-legacy) RETIRE_LEGACY=1; shift ;;
     --firewall)     FIREWALL=1; shift ;;
     --restart)      RESTART_ONLY=1; shift ;;
@@ -73,12 +95,37 @@ done
 ports=()
 for ((i = 0; i < INSTANCES; i++)); do ports+=("$((BASE_PORT + i))"); done
 
+log "node-setup v$NODE_SETUP_VERSION"
+REPO_SELF_CHECK
+
 # --- autodetect the VPN IP (10.8.0.*) unless given ---------------------------
 if [[ -z "$BIND_IP" ]]; then
   BIND_IP="$(ip -4 -o addr show scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | grep '^10\.8\.' | head -1 || true)"
   [[ -n "$BIND_IP" ]] || die "could not autodetect a 10.8.0.* VPN IP - pass --ip"
 fi
-log "node config: ip=$BIND_IP instances=${#ports[@]} ports=${ports[0]}-${ports[-1]} num_parallel=$NUM_PARALLEL"
+
+# --- live-fleet detection: trust what's INSTALLED over the default ------------
+# The user-facing complaint: "instances=8" in the banner when only 4 exist.
+# Root cause: INSTANCES/BASE_PORT are script defaults, not fleet state. The
+# authoritative source is systemd - the korvarix-ollama@<port> units that are
+# enabled/running on THIS box. Detection runs before the banner; a full
+# topology run (with explicit --instances) overrides it.
+detect_live_ports() {
+  systemctl list-units --no-legend --plain 'korvarix-ollama@*' 2>/dev/null \
+    | grep -oP 'korvarix-ollama@\K[0-9]+(?=\.service)' | sort -n | tr '\n' ' ' | sed 's/ $//'
+}
+
+LIVE_PORTS="$(detect_live_ports)"
+# without --instances the script aligns its port list with the live fleet;
+# --instances (topology intent) keeps the requested count for full setup runs
+if (( !INSTANCES_SET )) && [[ -n "$LIVE_PORTS" ]]; then
+  ports=($LIVE_PORTS)
+  INSTANCES=${#ports[@]}
+  BASE_PORT="${ports[0]}"
+  log "detected running instances: $LIVE_PORTS (aligning to the live fleet)"
+fi
+
+log "node config: ip=$BIND_IP instances=${#ports[@]} ports=${ports[0]}-${ports[-1]} num_parallel=$NUM_PARALLEL warm_targets=${WARM_PORTS:-${ports[*]}}"
 
 # --- restart-only shortcut ---------------------------------------------------
 if ((RESTART_ONLY)); then
@@ -90,10 +137,23 @@ if ((RESTART_ONLY)); then
   exit 0
 fi
 
-# --- sanity checks -----------------------------------------------------------
+# --- maint-only detection: --warm-cron without ANY topology intent -----------
+# topology intent = --instances/--base-port given, or non-default overrides
+MAINT_ONLY=0
+if ((WARM_CRON)) && (( !INSTANCES_SET )) && (( !BASE_PORT_SET )) \
+   && [[ "$KEEP_ALIVE" == "-1" ]] && [[ "$CTX" == "16384" ]] \
+   && [[ "$NUM_PARALLEL" == 1 ]] && (( !RETIRE_LEGACY )) && (( !FIREWALL )); then
+  # only --warm-cron (+ its own knobs) was given: defaults untouched
+  MAINT_ONLY=1
+  log "maint-only mode: --warm-cron without topology flags - installing cron ONLY (instances/template untouched)"
+fi
+
 HOME_DIR="${OLLAMA_HOME:-$DEF_HOME}"
-[[ -x "$HOME_DIR/bin/ollama" ]] || die "ollama binary not found at $HOME_DIR/bin/ollama (is the korvarix-cluster layout present?)"
-id korvarix-ollama >/dev/null 2>&1 || die "user 'korvarix-ollama' does not exist - create it first (cluster installer normally does)"
+
+# full topology pipeline as a FUNCTION: no giant if-wrap, maint-only simply
+# never calls it (the failure mode this guards against: `--warm-cron` alone
+# resurrecting disabled instances / rewriting the template)
+topology_pipeline() {
 
 # --- 1. old single-daemon unit -----------------------------------------------
 if [[ -f /etc/systemd/system/korvarix-ollama.service ]]; then
@@ -207,26 +267,54 @@ if ((RETIRE_LEGACY)); then
   fi
 fi
 
-# --- optional: hourly warm-keeper self-heal cron --------------------------------
-# requires warm-keeper.sh next to this script (uploaded with the repo folder)
-if ((WARM_CRON)); then
+}
+
+# --- maint-only path: install the cron, exit; topology is never touched --------
+if ((MAINT_ONLY)); then
   [[ -f "$HERE/warm-keeper.sh" ]] || die "--warm-cron needs warm-keeper.sh in $HERE (upload the full repo folder)"
-  log "installing warm-keeper (hourly cron, model: $WARM_MODEL)"
+  [[ -x "$HOME_DIR/bin/ollama" ]] || die "ollama binary not found at $HOME_DIR/bin/ollama (is the korvarix-cluster layout present?)"
+  WARM_CRON_INSTALL=1
+else
+  [[ -x "$HOME_DIR/bin/ollama" ]] || die "ollama binary not found at $HOME_DIR/bin/ollama (is the korvarix-cluster layout present?)"
+  id korvarix-ollama >/dev/null 2>&1 || die "user 'korvarix-ollama' does not exist - create it first (cluster installer normally does)"
+  topology_pipeline
+  WARM_CRON_INSTALL=$((WARM_CRON))
+fi
+
+# --- optional: hourly warm-keeper self-heal cron (BOTH paths) -------------------
+# requires warm-keeper.sh next to this script (uploaded with the repo folder).
+# maint-only mode: installs the cron ONLY (topology untouched, exits below).
+# full topology runs: installs it as part of the pipeline.
+# Ports: --warm-ports wins; otherwise derived from --instances/--base-port.
+KEEPER_PORTS="$WARM_PORTS"
+if [[ -z "$KEEPER_PORTS" ]]; then
+  KEEPER_PORTS="${ports[*]}"
+fi
+if ((WARM_CRON_INSTALL)); then
+  [[ -f "$HERE/warm-keeper.sh" ]] || die "--warm-cron needs warm-keeper.sh in $HERE (upload the full repo folder)"
+  log "installing warm-keeper (hourly cron, model: $WARM_MODEL, ports: $KEEPER_PORTS)"
   run install -m 755 "$HERE/warm-keeper.sh" /usr/local/sbin/korvarix-warm-keeper.sh
   run mkdir -p /var/log/korvarix
   if ((DRY_RUN)); then
-    log "[dry-run] would write /etc/cron.d/korvarix-warm (hourly, ports ${ports[0]}-${ports[-1]})"
+    log "[dry-run] would write /etc/cron.d/korvarix-warm (hourly, ports $KEEPER_PORTS)"
   else
     cat > /etc/cron.d/korvarix-warm <<EOF
 # korvarix warm-keeper: reload any instance whose model went cold (hourly)
-17 * * * * root /usr/local/sbin/korvarix-warm-keeper.sh --model "$WARM_MODEL" --ports "${ports[*]}" >> /var/log/korvarix/warm-keeper.log 2>&1
+# (the script writes /var/log/korvarix/warm-keeper.log itself; stdout is dropped)
+17 * * * * root /usr/local/sbin/korvarix-warm-keeper.sh --model "$WARM_MODEL" --ports "$KEEPER_PORTS" >/dev/null 2>&1
 EOF
     chmod 644 /etc/cron.d/korvarix-warm
   fi
-  log "warm-keeper installed - first pass will run at minute 17 of the next hour (or run it now: /usr/local/sbin/korvarix-warm-keeper.sh --model \"$WARM_MODEL\" --ports \"${ports[*]}\")"
+  log "warm-keeper installed - first pass will run at minute 17 of the next hour (or run it now: /usr/local/sbin/korvarix-warm-keeper.sh --model \"$WARM_MODEL\" --ports \"$KEEPER_PORTS\")"
 fi
 
-# --- 6. what to add on the frontend -------------------------------------------
+# --- maint-only path ends here (no frontend registration needed) ---------------
+if ((MAINT_ONLY)); then
+  log "maint-only run complete - instance topology untouched"
+  exit 0
+fi
+
+# --- 6. what to add on the frontend (full topology runs only) -------------------
 nodes_list=""
 for p in "${ports[@]}"; do nodes_list+="${nodes_list:+,}http://$BIND_IP:$p"; done
 log "node is ready. On the FRONTEND box run:"

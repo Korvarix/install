@@ -434,6 +434,17 @@ ${http2_lines}
     ssl_certificate     ${NGINX_CERT};
     ssl_certificate_key ${NGINX_KEY};
 
+    # TLS hardening (the HTTP:000 cure): TLS 1.3 has NO renegotiation at all -
+    # schannel (Windows curl/PowerShell Invoke-WebRequest) intermittently
+    # wedges inside the TLS 1.2 renegotiation nginx requests, killing client
+    # connections before any HTTP response (curl exit code 28/56, HTTP:000).
+    # Offering 1.3 lets capable clients negotiate past the problem entirely;
+    # the session cache + tickets-off keep resumption clean for everyone else.
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_prefer_server_ciphers off;
+    ssl_session_cache shared:korvarix_ssl:10m;
+    ssl_session_tickets off;
+
     # Static assets + websockets bypass the node gate entirely: Open WebUI
     # serves both without auth, and the node relay's connection shape was
     # losing response headers under nginx load (body served, headers gone).

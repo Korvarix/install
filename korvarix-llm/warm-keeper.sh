@@ -10,8 +10,10 @@
 # Install (as root, on a worker):
 #   install -m 755 warm-keeper.sh /usr/local/sbin/korvarix-warm-keeper.sh
 #   mkdir -p /var/log/korvarix
-#   printf '%s\n' '17 * * * * root /usr/local/sbin/korvarix-warm-keeper.sh >> /var/log/korvarix/warm-keeper.log 2>&1' \
+#   printf '%s\n' '17 * * * * root /usr/local/sbin/korvarix-warm-keeper.sh >/dev/null 2>&1' \
 #     > /etc/cron.d/korvarix-warm
+# (the script writes its own log file - do NOT also redirect stdout to the
+#  same file in the cron line, that double-logs every entry)
 #
 # Flags (optional - defaults fit the current fleet):
 #   --model NAME      model to keep warm        (default: oroboros-labs/claude-fable5:latest)
@@ -39,7 +41,10 @@ ONCE=1
 WATCH=0
 
 die() { printf '\033[1;31merror:\033[0m %s\n' "$*" >&2; exit 1; }
-log() { printf '%s\n' "$(date -Is) $*"; }
+# log() writes to the log FILE and mirrors to stdout (cron redirects stdout to
+# the same file via >>, so entries appear exactly once there; manual runs show
+# the pass live on the console as well)
+log() { printf '%s\n' "$(date -Is) $*" | tee -a "$LOG"; }
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -58,6 +63,7 @@ done
 IP="$(ip -4 -o addr show wg0 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | grep '^10\.8\.' | head -1 || true)"
 [ -n "$IP" ] || die "no 10.8.0.* VPN IP on wg0 - is the tunnel up?"
 mkdir -p "$LOG_DIR"
+touch "$LOG"
 
 # --- single-instance guard: a slow NFS warm must not overlap the next pass -----
 exec 9>/run/korvarix-warm.lock
