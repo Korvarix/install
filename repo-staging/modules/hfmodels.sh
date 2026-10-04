@@ -128,17 +128,15 @@ hfmodels_env_add() {
   HF_TRACKED_MODELS="$tracked"
   # sed alone no-ops (exit 0) when the key is absent - grep first, then
   # replace or append; same for the allowlist
-  # quote on write: the .env is sourced as shell - an unquoted multi-word
-  # value runs the second word as a command (bash: command not found)
   if grep -q '^MODELS_ALLOWLIST=' "$KCV_ENV_FILE" 2>/dev/null; then
-    sed -i "s|^MODELS_ALLOWLIST=.*|MODELS_ALLOWLIST=\"$allow\"|" "$KCV_ENV_FILE"
+    sed -i "s|^MODELS_ALLOWLIST=.*|MODELS_ALLOWLIST=$allow|" "$KCV_ENV_FILE"
   else
-    printf 'MODELS_ALLOWLIST="%s"\n' "$allow" >> "$KCV_ENV_FILE"
+    printf 'MODELS_ALLOWLIST=%s\n' "$allow" >> "$KCV_ENV_FILE"
   fi
   if grep -q '^HF_TRACKED_MODELS=' "$KCV_ENV_FILE" 2>/dev/null; then
-    sed -i "s|^HF_TRACKED_MODELS=.*|HF_TRACKED_MODELS=\"$tracked\"|" "$KCV_ENV_FILE"
+    sed -i "s|^HF_TRACKED_MODELS=.*|HF_TRACKED_MODELS=$tracked|" "$KCV_ENV_FILE"
   else
-    printf 'HF_TRACKED_MODELS="%s"\n' "$tracked" >> "$KCV_ENV_FILE"
+    printf 'HF_TRACKED_MODELS=%s\n' "$tracked" >> "$KCV_ENV_FILE"
   fi
   # re-source so later calls in this run see the new values
   set -a

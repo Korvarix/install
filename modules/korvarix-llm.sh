@@ -50,22 +50,10 @@ klm_wire_cluster() {
     sed -i "s|^OPENAI_API_BASE_URL=.*|OPENAI_API_BASE_URL=$master|" "$env_file"
     log "wired cluster endpoint: $master"
   fi
-  # ollama backend (pool or single node)
-  # KLM_OLLAMA_ENDPOINTS (comma-separated, optional) wins; else master's
-  # 11434. Written into OLLAMA_BASE_URLS (pool) when >1 endpoint, else
-  # OLLAMA_BASE_URL. install.sh's ollama-check verifies every endpoint.
+  # ollama backend (allowlist models) when the master serves one
   local ollama="${KLM_OLLAMA_ENDPOINT:-}"
-  local pool="${KLM_OLLAMA_ENDPOINTS:-}"
-  if [[ -z "$pool" && -n "${MASTER_VPN_IP:-}" ]]; then
-    pool="http://$MASTER_VPN_IP:${OLLAMA_PORT:-11434}"
-  fi
-  if [[ -n "$pool" ]] && ! grep -q '^OLLAMA_BASE_URLS=.\+' "$env_file"; then
-    if [[ "$pool" == *","* ]]; then
-      sed -i "s|^OLLAMA_BASE_URLS=.*|OLLAMA_BASE_URLS=$pool|" "$env_file"
-      log "wired ollama pool: $pool"
-    elif [[ -z "$ollama" ]]; then
-      ollama="$pool"
-    fi
+  if [[ -z "$ollama" && -n "${MASTER_VPN_IP:-}" ]]; then
+    ollama="http://$MASTER_VPN_IP:${OLLAMA_PORT:-11434}"
   fi
   if [[ -n "$ollama" ]] && ! grep -q '^OLLAMA_BASE_URL=.\+' "$env_file"; then
     sed -i "s|^OLLAMA_BASE_URL=.*|OLLAMA_BASE_URL=$ollama|" "$env_file"
@@ -109,63 +97,10 @@ klm_status() {
   ( cd "$dir" && bash install.sh status )
 }
 
-# generic runner: every new install.sh subcommand is reachable from the
-# station without its own wrapper (ollama-check, gate-off/on, check, ...)
-klm_run() {
-  local action="$1"; shift || true
-  [[ -f "$KLM_DIR/korvarix-llm/install.sh" ]] || die "frontend not fetched yet - run korvarix-llm install first"
-  ( cd "$KLM_DIR/korvarix-llm" && bash install.sh "$action" "$@" )
-}
-
-# ollama-check that works from ANY role. On the frontend it runs the real
-# install.sh check (the pool is defined there in OLLAMA_BASE_URLS). On
-# master/worker/interface (no /opt/korvarix-llm) it probes this cluster's
-# own Ollama endpoints instead: MASTER_VPN_IP + NODE_VPN_IP, so a serving
-# node can verify the whole pool from its own box.
-klm_ollama_check() {
-  local dir="$KLM_DIR/korvarix-llm"
-  if [[ -f "$dir/install.sh" ]]; then
-    ( cd "$dir" && bash install.sh ollama-check )
-    return
-  fi
-  # not the frontend box: derive endpoints from the cluster config
-  # - dedupe (master IP == NODE_VPN_IP must not probe itself twice)
-  # - probe NODE_VPN_IP only when THIS box runs korvarix-ollama (a
-  #   non-serving node must not report itself as a dead pool endpoint)
-  local eps=()
-  if [[ -n "${MASTER_VPN_IP:-}" ]]; then
-    eps+=("http://$MASTER_VPN_IP:${OLLAMA_PORT:-11434}")
-  elif [[ -n "${NODE_VPN_IP:-}" ]] && systemctl list-unit-files 2>/dev/null | grep -q korvarix-ollama; then
-    eps+=("http://$NODE_VPN_IP:${OLLAMA_PORT:-11434}")
-  fi
-  if [[ -n "${NODE_VPN_IP:-}" && -n "${MASTER_VPN_IP:-}" && "${NODE_VPN_IP}" != "${MASTER_VPN_IP}" ]] \
-     && systemctl list-unit-files 2>/dev/null | grep -q korvarix-ollama; then
-    eps+=("http://$NODE_VPN_IP:${OLLAMA_PORT:-11434}")
-  fi
-  if ((${#eps[@]} == 0)); then
-    die "no Ollama endpoints known on this box - set MASTER_VPN_IP (or install ollama: korvarix-cluster.sh ollama install) in $KCV_ENV_FILE, or run this on the frontend"
-  fi
-  local ok=0 total=0 ep rc
-  for ep in "${eps[@]}"; do
-    total=$((total + 1))
-    curl -fs --max-time 5 "${ep%/}/api/version" >/dev/null 2>&1 \
-      && { log "ollama OK: $ep"; ok=$((ok + 1)); } \
-      || warn "ollama UNREACHABLE: $ep (daemon down? OLLAMA_BIND loopback? firewall?)"
-  done
-  if ((ok == total)); then
-    ok "ollama pool: ${ok}/${total} endpoints answering"
-  else
-    warn "ollama pool: only ${ok}/${total} endpoints answering"
-    return 1
-  fi
-}
-
 klm_menu() {
   echo "  1) install/update frontend (Open WebUI + wiring)"
   echo "  2) install SSO gate      3) install nginx proxy"
   echo "  4) status                5) logs (100)   0) back"
-  echo "  6) check (strict)        7) ollama-check (pool)"
-  echo "  8) gate-off (EMERGENCY)  9) gate-on"
   local r
   read -r -p "select: " r
   case "$r" in
@@ -174,11 +109,6 @@ klm_menu() {
     3) klm_nginx ;;
     4) klm_status ;;
     5) docker logs --tail 100 korvarix-llm 2>&1 | tail -100 ;;
-    6) klm_run check || warn "check reported warnings above" ;;
-    7) klm_ollama_check || warn "a pool endpoint is not answering" ;;
-    8) kcv_confirm "EMERGENCY gate-off: panel opens WITHOUT korvarix.com SSO. Only for a base-site outage. Continue?" || return 0
-       klm_run gate-off ;;
-    9) klm_run gate-on ;;
     *) : ;;
   esac
 }
@@ -186,16 +116,12 @@ klm_menu() {
 kcv_module_korvarix-llm() {
   local action="${1:-menu}"
   case "$action" in
-    install)      klm_install ;;
-    gate)         klm_gate ;;
-    nginx)        klm_nginx ;;
-    status)       klm_status ;;
-    fetch)        klm_fetch ;;
-    check)        klm_run check ;;
-    ollama-check) klm_ollama_check ;;
-    gate-off)     klm_run gate-off ;;
-    gate-on)      klm_run gate-on ;;
-    menu)         klm_menu ;;
-    *) die "usage: korvarix-llm install|gate|nginx|status|fetch|check|ollama-check|gate-off|gate-on" ;;
+    install) klm_install ;;
+    gate)    klm_gate ;;
+    nginx)   klm_nginx ;;
+    status)  klm_status ;;
+    fetch)   klm_fetch ;;
+    menu)    klm_menu ;;
+    *) die "usage: korvarix-llm install|gate|nginx|status|fetch" ;;
   esac
 }

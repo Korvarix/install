@@ -53,15 +53,42 @@ kcv_confirm() {
   case "${__reply:-y}" in n|N) return 1 ;; *) return 0 ;; esac
 }
 
+pkg_resolve() {
+  local name="$1"
+  case "$name" in
+    "g++")
+      if command -v dnf >/dev/null 2>&1 || command -v yum >/dev/null 2>&1; then
+        printf 'gcc-c++'
+      else
+        printf 'g++'
+      fi
+      ;;
+    "docker.io")
+      if command -v dnf >/dev/null 2>&1 || command -v yum >/dev/null 2>&1; then
+        printf 'docker'
+      else
+        printf 'docker.io'
+      fi
+      ;;
+    *)
+      printf '%s' "$name"
+      ;;
+  esac
+}
+
 pkg_install() {
+  local resolved=()
+  for p in "$@"; do
+    resolved+=("$(pkg_resolve "$p")")
+  done
   if command -v apt-get >/dev/null 2>&1; then
     export DEBIAN_FRONTEND=noninteractive
-    apt-get update -qq && apt-get -y -qq install "$@"
-  elif command -v dnf >/dev/null 2>&1; then dnf -y -q install "$@"
-  elif command -v yum >/dev/null 2>&1; then yum -y -q install "$@"
-  elif command -v zypper >/dev/null 2>&1; then zypper --non-interactive install "$@"
-  elif command -v pacman >/dev/null 2>&1; then pacman -Sy --noconfirm --quiet "$@"
-  elif command -v apk >/dev/null 2>&1; then apk add --no-cache --quiet "$@"
+    apt-get update -qq && apt-get -y -qq install "${resolved[@]}"
+  elif command -v dnf >/dev/null 2>&1; then dnf -y -q install "${resolved[@]}"
+  elif command -v yum >/dev/null 2>&1; then yum -y -q install "${resolved[@]}"
+  elif command -v zypper >/dev/null 2>&1; then zypper --non-interactive install "${resolved[@]}"
+  elif command -v pacman >/dev/null 2>&1; then pacman -Sy --noconfirm --quiet "${resolved[@]}"
+  elif command -v apk >/dev/null 2>&1; then apk add --no-cache --quiet "${resolved[@]}"
   else die "no known package manager - install manually: $*"
   fi
 }

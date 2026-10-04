@@ -198,36 +198,38 @@ menu() {
     echo
     printf '\033[1;35m== korvarix cluster v%s ==\033[0m\n' "$KCV_VERSION"
     echo " host: $(hostname)   config: ${KCV_ENV_FILE}"
-    echo " 1) Set up this machine (wizard: interface box / first node / donor / frontend)"
-    echo " 2) Status & health check"
-    echo " 3) VPN management (WireGuard: issue peer / list / revoke / join)"
-    echo " 4) Models & inference (build, llama-server & rpc-server, add peer)"
-    echo " 5) Ollama (sandboxed serve, allowlist, daily patches, policy)"
-    echo " 6) Backup now / restore"
-    echo " 7) Cron jobs (health 5min, backup nightly, ollama daily, usage report)"
-    echo " 8) Update modules from repo"
-    echo " 9) View logs"
-    echo "10) Uninstall pieces"
-    echo "11) korvarix-llm frontend (Open WebUI panel: install/gate/nginx)"
-    echo "12) Usage report (nightly LLM usage summary -> webhook)"
-    echo "13) Hugging Face models (trending-per-company tracker, auto-pull+update)"
+    echo " 1) All-in-One Setup (Hub + Master + Frontend)"
+    echo " 2) Set up this machine (wizard: interface box / first node / donor / frontend)"
+    echo " 3) Status & health check"
+    echo " 4) VPN management (WireGuard: issue peer / list / revoke / join)"
+    echo " 5) Models & inference (build, llama-server & rpc-server, add peer)"
+    echo " 6) Ollama (sandboxed serve, allowlist, daily patches, policy)"
+    echo " 7) Backup now / restore"
+    echo " 8) Cron jobs (health 5min, backup nightly, ollama daily, usage report)"
+    echo " 9) Update modules from repo"
+    echo "10) View logs"
+    echo "11) Uninstall pieces"
+    echo "12) korvarix-llm frontend (Open WebUI panel: install/gate/nginx)"
+    echo "13) Usage report (nightly LLM usage summary -> webhook)"
+    echo "14) Hugging Face models (trending-per-company tracker, auto-pull+update)"
     echo " 0) Exit"
     local r
     read -r -p "select: " r || exit 0
     case "$r" in
-      1) kcv_run_module wizard ;;
-      2) kcv_run_module status ;;
-      3) kcv_run_module vpn ;;
-      4) kcv_run_module llama ;;
-      5) kcv_run_module ollama ;;
-      6) kcv_run_module backup ;;
-      7) kcv_run_module status cron ;;
-      8) module_sync ;;
-      9) kcv_run_module status logs ;;
-      10) kcv_run_module uninstall ;;
-      11) kcv_run_module korvarix-llm ;;
-      12) kcv_run_module report ;;
-      13) kcv_run_module hfmodels ;;
+      1) kcv_run_module allinone ;;
+      2) kcv_run_module wizard ;;
+      3) kcv_run_module status ;;
+      4) kcv_run_module vpn ;;
+      5) kcv_run_module llama ;;
+      6) kcv_run_module ollama ;;
+      7) kcv_run_module backup ;;
+      8) kcv_run_module status cron ;;
+      9) module_sync ;;
+      10) kcv_run_module status logs ;;
+      11) kcv_run_module uninstall ;;
+      12) kcv_run_module korvarix-llm ;;
+      13) kcv_run_module report ;;
+      14) kcv_run_module hfmodels ;;
       0) exit 0 ;;
       *) : ;;
     esac

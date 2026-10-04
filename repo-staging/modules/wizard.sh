@@ -22,15 +22,7 @@ wiz_env_reset() {
 
 wiz_env_set() {
   grep -v "^$1=" "$KCV_ENV_FILE" 2>/dev/null > "${KCV_ENV_FILE}.t" || true
-  # auto-quote values containing whitespace: the .env is sourced as shell, so
-  # an unquoted multi-word value (e.g. MODELS_ALLOWLIST="m1 m2") runs the
-  # second word as a COMMAND and truncates the variable ("llama3.1:8b:
-  # command not found")
-  if [[ "$2" == *[[:space:]]* ]]; then
-    printf '%s="%s"\n' "$1" "$2" >> "${KCV_ENV_FILE}.t"
-  else
-    printf '%s=%s\n' "$1" "$2" >> "${KCV_ENV_FILE}.t"
-  fi
+  printf '%s=%s\n' "$1" "$2" >> "${KCV_ENV_FILE}.t"
   mv "${KCV_ENV_FILE}.t" "$KCV_ENV_FILE"
 }
 
@@ -66,8 +58,8 @@ wiz_role_vpn() {
 
 wiz_role_master() {
   wiz_header "setup - first node (master)"
-  log "role: node1 - model library on LOCAL disk (NFS-exported to workers)"
-  log "+ its own sandboxed Ollama daemon. Models live at /data/models."
+  log "role: node1 - llama-server (owns all models on LOCAL disk) + rpc-server"
+  log "models live at /data/models on this box's own storage - never a shared mount."
   wiz_env_reset
   wiz_common
   kcv_ask VPN_PUBLIC_IP "Interface box public IP" ""
@@ -83,34 +75,32 @@ wiz_role_master() {
   wiz_env_set MASTER_VPN_IP "$NODE_VPN_IP"
   ok "step 1/4 - this master is $NODE_VPN_IP"
 
-  log "step 2/4: ollama install (sandboxed) + serving on the VPN IP"
-  wiz_env_set OLLAMA_BIND "$NODE_VPN_IP"
-  kcv_run_module ollama install
-  kcv_run_module ollama serve
+  log "step 2/4: llama.cpp build (rpc-server + llama-server)"
+  kcv_run_module llama build
+  log "step 2/4 - rpc-server starting (offers this node's own RAM too)"
+  kcv_run_module llama rpc-start
 
   log "step 3/4: model serving"
   mkdir -p "${MODELS_DIR:-/data/models}"
-  kcv_ask MODELS_ALLOWLIST "models clients may call (space-separated, e.g. qwen2.5:7b llama3.1:8b; empty = skip)" "${MODELS_ALLOWLIST:-}"
-  if [[ -n "${MODELS_ALLOWLIST:-}" ]]; then
-    kcv_run_module ollama pull
-    if kcv_confirm "build + push the request policy to the frontend now?"; then
-      kcv_run_module ollama policy
-      kcv_run_module ollama push
-    fi
+  local mf
+  kcv_ask MODEL_FILE "gguf filename inside ${MODELS_DIR:-/data/models} (empty = skip serving for now)" ""
+  mf="$MODEL_FILE"
+  wiz_env_set MODEL_FILE "$mf"
+  if [[ -n "$mf" ]]; then
+    kcv_run_module llama start
   else
-    warn "no models set - add later via menu 5 (allowlist + pull + policy)"
+    warn "no model set - start later via menu 4 (set-model + start)"
   fi
 
   log "step 4/4: monitoring cron"
   wiz_cron_offer
-  ok "MASTER COMPLETE. Workers: run this script on each -> wizard -> 3) Additional node."
+  ok "MASTER COMPLETE. Donors: run this script on each -> wizard -> 3) Additional node."
 }
 
 wiz_role_node() {
-  wiz_header "setup - additional node (Ollama worker)"
-  log "role: node N - joins the VPN + runs its own sandboxed Ollama daemon."
-  log "inference is LOCAL to each node (RAM cannot be pooled over the network);"
-  log "the master serves model files (NFS) and the frontend load-balances the pool."
+  wiz_header "setup - additional node (RAM donor)"
+  log "role: node N - joins the VPN + runs rpc-server. No storage duties, no models."
+  log "its RAM is offered to the master's llama-server for merged-RAM inference."
   wiz_env_reset
   wiz_common
   kcv_ask VPN_PUBLIC_IP "Interface box public IP" ""
@@ -120,33 +110,30 @@ wiz_role_node() {
   state_set role node
   state_set vpn_expected 1
 
-  log "step 1/4: join VPN (peer .conf from the interface box)"
+  log "step 1/3: join VPN (peer .conf from the interface box)"
   kcv_run_module vpn join
   NODE_VPN_IP="$(state_get vpn_local_ip)"
   wiz_env_set NODE_VPN_IP "$NODE_VPN_IP"
-  ok "step 1/4 - this node is $NODE_VPN_IP"
+  ok "step 1/3 - this node is $NODE_VPN_IP"
 
-  log "step 2/4: ollama install (sandboxed) + serving on the VPN IP"
-  wiz_env_set OLLAMA_BIND "$NODE_VPN_IP"
-  kcv_run_module ollama install
-  kcv_run_module ollama serve
+  log "step 2/3: llama.cpp build + rpc-server"
+  kcv_run_module llama build
+  kcv_run_module llama rpc-start
+  ok "step 2/3 - rpc-server listening on $NODE_VPN_IP:${RPC_PORT:-50052}"
 
-  log "step 3/4: pull the allowlist models (master's MODELS_ALLOWLIST)"
-  kcv_run_module ollama pull
-
-  log "step 4/4: monitoring cron"
+  log "step 3/3: monitoring cron"
   wiz_cron_offer
   echo
-  warn "LAST STEP (on the FRONTEND, once): add this node to the inference pool:"
-  warn "  append http://$NODE_VPN_IP:${OLLAMA_PORT:-11434} to OLLAMA_BASE_URLS in korvarix-llm/.env"
-  warn "  then: ./install.sh && ./install.sh ollama-check"
-  ok "NODE JOINED. Pool capacity grows one full Ollama daemon (2-4 concurrent slots)."
+  warn "LAST STEP (on the MASTER, once): register this donor's RAM:"
+  warn "  korvarix-cluster.sh llama add-peer $NODE_VPN_IP"
+  warn "  (master menu 4 -> 7 'add peer' does the same)"
+  ok "NODE JOINED. Merged-RAM ceiling grows ~110GB once the master adds it."
 }
 
 wiz_role_frontend() {
   wiz_header "setup - frontend box (Open WebUI panel)"
   log "role: korvarix-llm - Open WebUI + SSO gate + nginx. Joins the VPN to reach"
-  log "the Ollama worker pool (master 10.8.0.x first) and receives the policy push."
+  log "the master's llama-server (10.8.0.x) and receives the policy push."
   wiz_env_reset
   wiz_common
   kcv_ask VPN_PUBLIC_IP "Interface box public IP" ""
@@ -172,8 +159,8 @@ wiz_role_frontend() {
 kcv_module_wizard() {
   wiz_header "setup wizard"
   echo "  1) Interface box    - WireGuard hub + SSH jump (small box)"
-  echo "  2) First node       - master: model library on local disk + own Ollama"
-  echo "  3) Additional node  - Ollama worker: VPN + own Ollama daemon (pool slot)"
+  echo "  2) First node       - master: models on local disk + llama-server"
+  echo "  3) Additional node  - RAM donor: VPN + rpc-server (+~110GB merged)"
   echo "  4) Frontend box     - Open WebUI panel (korvarix-llm)"
   echo "  0) cancel"
   local r

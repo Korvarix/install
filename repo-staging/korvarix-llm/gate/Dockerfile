@@ -7,7 +7,6 @@ COPY gate/gate.js gate/gate.js
 COPY lib lib
 ENV NODE_ENV=production
 # the gate reads its real config from --env-file at runtime
-# :8211 = SSO gate/proxy, :8212 = LLM node load balancer (when OLLAMA_NODES set)
-EXPOSE 8211 8212
+EXPOSE 8211
 USER node
 CMD ["node", "gate/gate.js"]

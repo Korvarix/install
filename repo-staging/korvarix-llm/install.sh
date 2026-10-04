@@ -16,6 +16,9 @@
 #
 # Usage:
 #   ./install.sh              install or update (pull + recreate + checks)
+#   ./install.sh gate         build + run the SSO gate container
+#   ./install.sh gate-off     EMERGENCY: bypass the gate's SSO wall (site opens up)
+#   ./install.sh gate-on      restore the gate's SSO wall after gate-off
 #   ./install.sh check        strict verification: config loaded + upstream live
 #   ./install.sh nginx        reverse proxy: LLM_DOMAIN -> 127.0.0.1:$WEBUI_PORT (Let's Encrypt)
 #   ./install.sh nginx-remove remove the proxy site config
@@ -103,6 +106,13 @@ ENABLE_LOGIN_FORM=True
 # Until then the panel runs with no models (frontend-only, as intended).
 OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-}
 
+# Multiple Ollama worker nodes (the pool): comma-separated endpoints. When
+# non-empty, Open WebUI uses this INSTEAD of OLLAMA_BASE_URL (native variable).
+# Add a slave = append its endpoint here + re-run ./install.sh; verify every
+# node answers with ./install.sh ollama-check.
+#   OLLAMA_BASE_URLS=http://10.8.0.14:11434,http://10.8.0.15:11434
+OLLAMA_BASE_URLS=${OLLAMA_BASE_URLS:-}
+
 # Optional: any OpenAI-compatible endpoint as an alternative/extra backend.
 OPENAI_API_BASE_URL=
 OPENAI_API_KEY=
@@ -150,11 +160,62 @@ up() {
   if docker network inspect korvarix-llm-net >/dev/null 2>&1; then
     net_args=(--network korvarix-llm-net --network-alias open-webui)
   fi
+
+  # ---- korvarix branding (theme + logos) -------------------------------------
+  # Open WebUI serves /static/custom.css and /static/{logo,favicon,splash}.png
+  # from its static dir; per-file -v mounts override exactly those paths with
+  # the korvarix set (theme/custom.css + scripts/make-branding.mjs output).
+  # WEBUI_NAME renames the UI text; ENABLE_VERSION_UPDATE_CHECK stays on the
+  # stock value. Assets are (re)generated fresh on every install so an updated
+  # logo.svg lands on the next re-run, like the gate's --no-cache rule.
+  local theme_args=()
+  if [[ -f "$HERE/theme/custom.css" ]]; then
+    log "branding: korvarix theme + logos"
+    mkdir -p "$HERE/theme/assets"
+    # regenerate the PNG/ICO set from the korvarix vector logo (needs node;
+    # if node is missing on this box, fall back to the committed copies)
+    if command -v node >/dev/null 2>&1; then
+      node "$HERE/scripts/make-branding.mjs" "$HERE/theme/korvarix-logo.svg" "$HERE/theme/assets" >/dev/null 2>&1 \
+        || warn "branding: generator failed - using committed theme assets"
+    else
+      warn "branding: node not found - using committed theme assets"
+    fi
+    theme_args+=(
+      -v "$HERE/theme/custom.css:/app/backend/open_webui/static/custom.css:ro"
+      -v "$HERE/theme/assets/logo.png:/app/backend/open_webui/static/logo.png:ro"
+      # index.html declares favicon.png AND favicon.svg; browsers prefer the
+      # SVG - missing this mount left the stock Open WebUI tab icon
+      -v "$HERE/theme/assets/favicon.svg:/app/backend/open_webui/static/favicon.svg:ro"
+      -v "$HERE/theme/assets/favicon.png:/app/backend/open_webui/static/favicon.png:ro"
+      -v "$HERE/theme/assets/favicon-96x96.png:/app/backend/open_webui/static/favicon-96x96.png:ro"
+      -v "$HERE/theme/assets/favicon.ico:/app/backend/open_webui/static/favicon.ico:ro"
+      -v "$HERE/theme/assets/apple-touch-icon.png:/app/backend/open_webui/static/apple-touch-icon.png:ro"
+      -v "$HERE/theme/assets/splash.png:/app/backend/open_webui/static/splash.png:ro"
+      -v "$HERE/theme/assets/splash-dark.png:/app/backend/open_webui/static/splash-dark.png:ro"
+      -v "$HERE/theme/assets/web-app-manifest-192x192.png:/app/backend/open_webui/static/web-app-manifest-192x192.png:ro"
+      -v "$HERE/theme/assets/web-app-manifest-512x512.png:/app/backend/open_webui/static/web-app-manifest-512x512.png:ro"
+    )
+    # brand name in the UI (title, docs header). QUOTED value: .env is sourced
+    # by install.sh and by the container's --env-file, and an unquoted space
+    # ("WEBUI_NAME=Korvarix AI") makes bash try to run `AI` as a command.
+    if ! grep -q '^WEBUI_NAME=' .env 2>/dev/null; then
+      printf 'WEBUI_NAME="Korvarix AI"\n' >> .env
+    fi
+    # -e takes precedence over --env-file, and $WEBUI_NAME here is the
+    # shell-parsed value (quotes already stripped by sourcing) - this keeps
+    # the literal quote characters OUT of the container (which rendered the
+    # UI title as '"Korvarix AI" (Open WebUI)')
+    theme_args+=(-e "WEBUI_NAME=${WEBUI_NAME:-Korvarix AI}")
+  else
+    warn "branding: theme/custom.css not found - skipping (upload the whole folder)"
+  fi
+
   docker run -d \
     --name "$CONTAINER_NAME" \
     --restart unless-stopped \
     --add-host=host.docker.internal:host-gateway \
     "${net_args[@]}" \
+    "${theme_args[@]}" \
     -p "127.0.0.1:${port}:8080" \
     --env-file .env \
     -v "${VOLUME_NAME}:/app/backend/data" \
@@ -173,6 +234,7 @@ up() {
 # ---- korvarix SSO gate: node sidecar between nginx and Open WebUI ------------
 # Validates the korvarix SSO code, checks the LLM access package, syncs the
 # korvarix avatar (no gravatar), and proxies with the trusted headers.
+# shellcheck disable=SC2034  # kept for parity with the documented folder layout
 GATE_DIR="$HERE/gate"
 GATE_PORT_DEFAULT=8211
 
@@ -194,12 +256,9 @@ gate_env() {
     printf '# open webui 302-forwards profile images to their origin URL (korvarix CDN)\n' >> .env
     printf 'ENABLE_PROFILE_IMAGE_URL_FORWARDING=true\n' >> .env
     # trusted headers: the whole point of the gate - enable them now
-    # (ONLY in sso mode; open mode requires them commented out - see below)
-    if [[ "${GATE_SSO_MODE:-sso}" != "open" ]]; then
-      sed -i 's|^# WEBUI_AUTH_TRUSTED_EMAIL_HEADER=|WEBUI_AUTH_TRUSTED_EMAIL_HEADER=|' .env
-      sed -i 's|^# WEBUI_AUTH_TRUSTED_NAME_HEADER=|WEBUI_AUTH_TRUSTED_NAME_HEADER=|' .env
-      sed -i 's|^# WEBUI_AUTH_SIGNOUT_REDIRECT_URL=|WEBUI_AUTH_SIGNOUT_REDIRECT_URL=|' .env
-    fi
+    sed -i 's|^# WEBUI_AUTH_TRUSTED_EMAIL_HEADER=|WEBUI_AUTH_TRUSTED_EMAIL_HEADER=|' .env
+    sed -i 's|^# WEBUI_AUTH_TRUSTED_NAME_HEADER=|WEBUI_AUTH_TRUSTED_NAME_HEADER=|' .env
+    sed -i 's|^# WEBUI_AUTH_SIGNOUT_REDIRECT_URL=|WEBUI_AUTH_SIGNOUT_REDIRECT_URL=|' .env
     log "gate settings appended to .env - set LLM_SSO_KEY (same value in korvarix-base) + OPEN_WEBUI_API_KEY"
   fi
   # shellcheck disable=SC1091
@@ -236,19 +295,6 @@ gate_run() {
   gate_env
   local gport="${GATE_PORT:-$GATE_PORT_DEFAULT}"
 
-  # open mode: the gate performs no identity operations, so OWUI must NOT
-  # trust the trusted headers anymore - comment them out before the env bake.
-  # (The gate refuses to start in open mode if the env still carries them.)
-  if [[ "${GATE_SSO_MODE:-sso}" == "open" ]]; then
-    log "GATE_SSO_MODE=open - commenting out WEBUI_AUTH_* trusted-header lines (OWUI native auth only)"
-    sed -i 's|^WEBUI_AUTH_TRUSTED_EMAIL_HEADER=|# WEBUI_AUTH_TRUSTED_EMAIL_HEADER=|' .env
-    sed -i 's|^WEBUI_AUTH_TRUSTED_NAME_HEADER=|# WEBUI_AUTH_TRUSTED_NAME_HEADER=|' .env
-    sed -i 's|^WEBUI_AUTH_SIGNOUT_REDIRECT_URL=|# WEBUI_AUTH_SIGNOUT_REDIRECT_URL=|' .env
-    # re-source after the edits
-    # shellcheck disable=SC1091
-    set -a; source .env; set +a
-  fi
-
   # the gate runs as a second container on the same docker network as
   # open-webui: it reaches OWUI by container alias (no host node needed).
   # If OWUI was created by an older install (default bridge network), connect
@@ -269,18 +315,6 @@ gate_run() {
   else
     printf 'WEBUI_INTERNAL_PORT=8080\n' >> .env
   fi
-  # LLM load balancing: when OLLAMA_NODES lists the model servers, the gate
-  # runs a least-connections LB on :8212 and Open WebUI dials IT
-  # (OLLAMA_BASE_URL -> gate:8212) instead of one node directly. A single
-  # OLLAMA_BASE_URL with no OLLAMA_NODES keeps today's direct-wire behavior.
-  if grep -q '^OLLAMA_NODES=.\+' .env 2>/dev/null; then
-    if grep -q '^OLLAMA_BASE_URL=' .env 2>/dev/null; then
-      sed -i 's|^OLLAMA_BASE_URL=.*|OLLAMA_BASE_URL=http://korvarix-llm-lb:8212|' .env
-    else
-      printf 'OLLAMA_BASE_URL=http://korvarix-llm-lb:8212\n' >> .env
-    fi
-    log "OLLAMA_NODES set - Open WebUI dials the in-gate load balancer (http://korvarix-llm-lb:8212)"
-  fi
   # re-source after .env edits
   # shellcheck disable=SC1091
   set -a; source .env; set +a
@@ -296,38 +330,37 @@ gate_run() {
     log "recreating container korvarix-llm-gate"
     docker rm -f korvarix-llm-gate >/dev/null
   fi
-  # both listeners live in this ONE container: :8211 = SSO gate/proxy,
-  # :8212 = LLM node load balancer (only active when OLLAMA_NODES is set).
-  # Both are published to loopback only; OWUI reaches the LB over the docker
-  # network via http://korvarix-llm-gate:8212.
-  local lbport="${GATE_LB_PORT:-8212}"
   docker run -d \
     --name korvarix-llm-gate \
     --restart unless-stopped \
     --network korvarix-llm-net \
-    --network-alias korvarix-llm-lb \
     -p "127.0.0.1:${gport}:8211" \
-    -p "127.0.0.1:${lbport}:8212" \
     --env-file .env \
     -e GATE_BIND=0.0.0.0 \
     -e GATE_TRACE=1 \
     -e WEBUI_HOST=open-webui \
     -e WEBUI_INTERNAL_PORT=8080 \
+    -v /etc/korvarix-llm:/etc/korvarix-llm:ro \
+    -v /var/log/korvarix:/var/log/korvarix \
+    -e KORVARIX_POLICY_PATH=/etc/korvarix-llm/korvarix-policy.json \
+    -e KORVARIX_USAGE_LOG=/var/log/korvarix/llm-usage.jsonl \
     korvarix-llm-gate >/dev/null
+  # policy + usage: /etc/korvarix-llm (station-pushed policy, ro) and
+  # /var/log/korvarix (usage JSONL, rw) ride in from the host when they exist;
+  # without them the gate runs on built-in defaults and skips usage logging.
 
   # prove the running container carries the CURRENT gate.js: compare the hash
   # inside the container with the file on disk
-  local want="$(sha256sum "$HERE/gate/gate.js" | cut -d' ' -f1)"
-  local have="$(docker exec korvarix-llm-gate sha256sum /gate/gate/gate.js 2>/dev/null | cut -d' ' -f1 || true)"
+  local want
+  want="$(sha256sum "$HERE/gate/gate.js" | cut -d' ' -f1)"
+  local have
+  have="$(docker exec korvarix-llm-gate sha256sum /gate/gate/gate.js 2>/dev/null | cut -d' ' -f1 || true)"
   if [[ "$have" != "$want" ]]; then
     die "gate image does NOT contain the current gate.js (image=$have file=$want) - build cache or upload issue"
   fi
   log "gate verified: container gate.js matches the repo copy (sha256 ${want:0:12}…)"
 
   log "gate running as container korvarix-llm-gate (host 127.0.0.1:$gport -> open-webui container)"
-  if grep -q '^OLLAMA_NODES=.\+' .env 2>/dev/null; then
-    log "LLM load balancer active on 127.0.0.1:$lbport -> nodes: $(grep '^OLLAMA_NODES=' .env | cut -d= -f2)"
-  fi
   # if nginx was set up BEFORE the gate existed, it still targets Open WebUI
   # directly (bypassing SSO) - re-render it onto the gate now
   if command -v nginx >/dev/null 2>&1 && [[ -f /etc/nginx/conf.d/korvarix-llm.conf || -f /etc/nginx/sites-available/korvarix-llm.conf || -f /etc/nginx/http.d/korvarix-llm.conf ]]; then
@@ -335,6 +368,38 @@ gate_run() {
     nginx_setup
   else
     printf '  next: ./install.sh nginx (llm.korvarix.com -> gate)\n'
+  fi
+}
+
+# ---- emergency kill switch: GATE_BYPASS -------------------------------------
+# GATE_BYPASS=true makes the gate skip the SSO/entitlement wall and proxy raw
+# to Open WebUI (no trusted headers, browser cookies pass through). Use when
+# korvarix.com is down (or the SSO chain breaks) and every visitor is locked
+# out. `gate-off` sets it and recreates the gate container; `gate-on` clears
+# it. The API-key passthrough (allowlist, rate limits, metering) is NOT
+# affected - the public endpoint stays policy-enforced in both modes.
+gate_bypass() {
+  local want="$1" # 1 = bypass on (gate OFF), 0 = bypass off (gate ON)
+  [[ -f .env ]] || die "no .env - run ./install.sh first"
+  # gate must exist: the toggle only makes sense with a running gate
+  if ! docker ps -a --format '{{.Names}}' | grep -qx "korvarix-llm-gate"; then
+    die "gate container not found - run './install.sh gate' first"
+  fi
+  if grep -q '^GATE_BYPASS=' .env 2>/dev/null; then
+    sed -i "s|^GATE_BYPASS=.*|GATE_BYPASS=$want|" .env
+  else
+    printf '\n# emergency kill switch: 1 = skip the SSO wall (korvarix.com down?)\nGATE_BYPASS=%s\n' "$want" >> .env
+  fi
+  # re-source so the summary below reflects the new state
+  # shellcheck disable=SC1091
+  set -a; source .env; set +a
+  log "recreating gate container with GATE_BYPASS=$want"
+  gate_run
+  if [[ "$want" == "1" ]]; then
+    log "gate wall OFF - llm.korvarix.com now serves Open WebUI directly (no korvarix.com SSO)"
+    printf '  restore:   ./install.sh gate-on\n'
+  else
+    log "gate wall ON - SSO + entitlement checks restored"
   fi
 }
 
@@ -347,8 +412,6 @@ gate_run() {
 NGINX_CONF=""
 NGINX_WEBROOT=""
 NGINX_CONF_LINK=""
-# set by detect_nginx_http2: 1 = nginx >= 1.25 (standalone "http2 on;")
-NGINX_HTTP2_MODERN=""
 
 detect_nginx_layout() {
   local nginx_conf_dir
@@ -379,20 +442,21 @@ detect_nginx_layout() {
   mkdir -p "$NGINX_WEBROOT"
 }
 
+# http2 syntax varies by nginx version: >= 1.25.1 wants `http2 on;` (the old
+# 'listen ... http2' form warns on 1.28+), older builds hard-FAIL 'http2 on;'
+# as an unknown directive. Default to the old form - it works on every version
+# and at worst logs a deprecation warning - and switch when we detect >= 1.25.1.
+NGINX_HTTP2_LISTEN_FLAG=" http2"   # appended to `listen 443 ssl`
+NGINX_HTTP2_DIRECTIVE=""           # standalone directive line (new syntax only)
+
 detect_nginx_http2() {
-  # "http2 on;" exists only on nginx >= 1.25; older builds must use the
-  # legacy "listen ... http2" form (still valid there, no warning).
-  # nginx -V line looks like: ... nginx/1.18.0 (Ubuntu) ...
   local ver
-  ver="$(nginx -V 2>&1 | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
-  NGINX_HTTP2_MODERN=""
-  if [[ -n "$ver" ]]; then
-    local major minor
-    major="${ver%%.*}"
-    minor="$(cut -d. -f2 <<<"$ver")"
-    if ((major > 1 || (major == 1 && minor >= 25))); then
-      NGINX_HTTP2_MODERN=1
-    fi
+  ver="$(nginx -v 2>&1 | grep -o '[0-9]\+\.[0-9]\+\.[0-9]\+' | head -1)"
+  [[ "$ver" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]] || return 0
+  local major="${BASH_REMATCH[1]}" minor="${BASH_REMATCH[2]}" patch="${BASH_REMATCH[3]}"
+  if (( major > 1 )) || (( minor > 25 )) || (( minor == 25 && patch >= 1 )); then
+    NGINX_HTTP2_LISTEN_FLAG=""
+    NGINX_HTTP2_DIRECTIVE="    http2 on;"
   fi
 }
 
@@ -408,42 +472,20 @@ nginx_upstream_block() {
     listen6=""
   fi
   if [[ "$with_tls" == "tls" ]]; then
-    local listen4_tls="    listen 443 ssl;"
     local listen6_tls=""
     if [[ -n "$listen6" ]]; then listen6_tls="    listen [::]:443 ssl;"; fi
-    # http2 form by nginx version: >= 1.25 uses the standalone directive,
-    # older builds need it ON the listen lines (the standalone form is an
-    # "unknown directive" EMERG there - it kills the whole reload).
-    local http2_lines=""
-    if [[ -n "$NGINX_HTTP2_MODERN" ]]; then
-      http2_lines="    http2 on;"
-    else
-      listen4_tls="    listen 443 ssl http2;"
-      if [[ -n "$listen6" ]]; then listen6_tls="    listen [::]:443 ssl http2;"; fi
-      http2_lines="    # http2 via the legacy listen form (nginx < 1.25)"
-    fi
     http_block="location / {
         return 301 https://\$host\$request_uri;
     }"
     tls_block="server {
-${listen4_tls}
+    # http2 syntax picked by nginx version (see detect_nginx_http2)
+    listen 443 ssl${NGINX_HTTP2_LISTEN_FLAG};
+${NGINX_HTTP2_DIRECTIVE}
 ${listen6_tls}
-${http2_lines}
     server_name ${LLM_DOMAIN};
 
     ssl_certificate     ${NGINX_CERT};
     ssl_certificate_key ${NGINX_KEY};
-
-    # TLS hardening (the HTTP:000 cure): TLS 1.3 has NO renegotiation at all -
-    # schannel (Windows curl/PowerShell Invoke-WebRequest) intermittently
-    # wedges inside the TLS 1.2 renegotiation nginx requests, killing client
-    # connections before any HTTP response (curl exit code 28/56, HTTP:000).
-    # Offering 1.3 lets capable clients negotiate past the problem entirely;
-    # the session cache + tickets-off keep resumption clean for everyone else.
-    ssl_protocols TLSv1.2 TLSv1.3;
-    ssl_prefer_server_ciphers off;
-    ssl_session_cache shared:korvarix_ssl:10m;
-    ssl_session_tickets off;
 
     # Static assets + websockets bypass the node gate entirely: Open WebUI
     # serves both without auth, and the node relay's connection shape was
@@ -613,8 +655,7 @@ nginx_verify_loaded() {
   grep -q "server_name ${domain}" <<<"$dump"
 }
 
-# can we reach the Open WebUI upstream on loopback?
-# retries for up to ~60s: first boot initializes the DB and takes a while
+# probe upstream on loopback; retries ~60s for first-boot init
 nginx_probe_upstream() {
   local port="$1"
   local attempt
@@ -635,21 +676,48 @@ nginx_probe_upstream() {
   return 1
 }
 
+# verify EVERY Ollama endpoint in the pool answers /api/version. Run when a
+# worker node is added (OLLAMA_BASE_URLS): catches typos, down nodes, and
+# firewall mistakes BEFORE Open WebUI starts quietly dropping that endpoint.
+ollama_check() {
+  ensure_env
+  local endpoints="${OLLAMA_BASE_URLS:-}"
+  [[ -n "$endpoints" ]] || endpoints="${OLLAMA_BASE_URL:-}"
+  if [[ -z "$endpoints" ]]; then
+    warn "no Ollama endpoints configured (set OLLAMA_BASE_URL or OLLAMA_BASE_URLS in .env)"
+    return 1
+  fi
+  local ok=0 total=0
+  IFS=',' read -ra eps <<< "$endpoints"
+  for ep in "${eps[@]}"; do
+    ep="$(echo "$ep" | xargs)"
+    [[ -n "$ep" ]] || continue
+    total=$((total + 1))
+    if curl -fs --max-time 5 "${ep%/}/api/version" >/dev/null 2>&1; then
+      log "ollama OK: ${ep%/}"
+      ok=$((ok + 1))
+    else
+      warn "ollama UNREACHABLE: ${ep%/} (endpoint down? firewall? wrong IP?)"
+    fi
+  done
+  if ((ok == total && total > 0)); then
+    log "ollama pool: ${ok}/${total} endpoints answering"
+    return 0
+  fi
+  warn "ollama pool: only ${ok}/${total} endpoints answering"
+  return 1
+}
+
 nginx_setup() {
   ensure_env
   local port="${WEBUI_PORT:-8210}"
   # when the gate is installed, nginx proxies to the GATE (it owns SSO +
-  # avatars and forwards to Open WebUI itself); otherwise straight to OWUI.
-  # Open mode: LLM_SSO_KEY may be absent - detect the gate via GATE_PORT.
+  # avatars and forwards to Open WebUI itself); otherwise straight to OWUI
   local proxy_target="$port"
-  if grep -q '^GATE_SSO_MODE=open' .env 2>/dev/null || grep -q '^LLM_SSO_KEY=.\+' .env 2>/dev/null; then
+  if grep -q '^LLM_SSO_KEY=.\+' .env 2>/dev/null; then
     proxy_target="${GATE_PORT:-$GATE_PORT_DEFAULT}"
     gate_ensure_env_keys
-    if grep -q '^GATE_SSO_MODE=open' .env 2>/dev/null; then
-      log "gate detected (open mode) - nginx will proxy llm.korvarix.com -> 127.0.0.1:${proxy_target} (gate -> Open WebUI, native auth)"
-    else
-      log "gate detected - nginx will proxy llm.korvarix.com -> 127.0.0.1:${proxy_target} (gate -> Open WebUI)"
-    fi
+    log "gate detected - nginx will proxy llm.korvarix.com -> 127.0.0.1:${proxy_target} (gate -> Open WebUI)"
   else
     log "no gate configured - nginx will proxy straight to Open WebUI (run './install.sh gate' for SSO)"
   fi
@@ -714,10 +782,7 @@ nginx_setup() {
     # Open WebUI directly otherwise
     local summary_target="${proxy_target}"
     local summary_label="Open WebUI"
-    if [[ "$summary_target" != "$port" ]]; then
-      if grep -q '^GATE_SSO_MODE=open' .env 2>/dev/null; then summary_label="gate (open mode) -> Open WebUI";
-      else summary_label="gate (korvarix SSO) -> Open WebUI"; fi
-    fi
+    if [[ "$summary_target" != "$port" ]]; then summary_label="gate (korvarix SSO) -> Open WebUI"; fi
     log "nginx is serving https://${LLM_DOMAIN} -> http://127.0.0.1:${summary_target} (${summary_label})"
     printf '  config:    %s\n' "$NGINX_CONF"
     printf '  renew:     certbot renew (systemd timer) + deploy hook %s\n' "$hook"
@@ -782,14 +847,12 @@ nginx_check() {
   fi
 
   # 4. upstream reachable? when the gate is installed, nginx forwards to the
-  # gate (which forwards to Open WebUI) - probe what nginx actually targets.
-  # Open mode: LLM_SSO_KEY may be absent, so detect the gate by GATE_PORT.
+  # gate (which forwards to Open WebUI) - probe what nginx actually targets
   local upstream_port="$port"
   local upstream_label="Open WebUI"
-  if grep -q '^GATE_SSO_MODE=open' .env 2>/dev/null || grep -q '^LLM_SSO_KEY=.\+' .env 2>/dev/null; then
+  if grep -q '^LLM_SSO_KEY=.\+' .env 2>/dev/null; then
     upstream_port="${GATE_PORT:-$GATE_PORT_DEFAULT}"
     upstream_label="gate (korvarix SSO)"
-    if grep -q '^GATE_SSO_MODE=open' .env 2>/dev/null; then upstream_label="gate (open mode)"; fi
   fi
   if ! nginx_probe_upstream "$upstream_port"; then
     problems+=("$upstream_label not reachable on 127.0.0.1:${upstream_port} (run: ./install.sh / ./install.sh gate)")
@@ -848,9 +911,19 @@ case "${1:-install}" in
     local_proxy_status >/dev/null 2>&1 || true
     nginx_check
     nginx_mime_check || true
+    ollama_check || true
+    ;;
+  ollama-check)
+    ollama_check
     ;;
   gate)
     gate_run
+    ;;
+  gate-off)
+    gate_bypass 1
+    ;;
+  gate-on)
+    gate_bypass 0
     ;;
   nginx)
     nginx_setup
@@ -872,5 +945,5 @@ case "${1:-install}" in
     docker rm -f "$CONTAINER_NAME" 2>/dev/null || true
     log "container removed; data volume '$VOLUME_NAME' kept (docker volume rm $VOLUME_NAME to drop it)"
     ;;
-  *) die "unknown command: $1 (use install|update|check|gate|nginx|nginx-remove|status|logs|stop|start|restart|uninstall)" ;;
+  *) die "unknown command: $1 (use install|update|check|ollama-check|gate|gate-off|gate-on|nginx|nginx-remove|status|logs|stop|start|restart|uninstall)" ;;
 esac
