@@ -31,22 +31,13 @@ kcv_module_allinone() {
   kcv_ask NODE_NAME "This machine's name (e.g. korvarix-allinone)" "$(hostname)"
   allinone_env_set NODE_NAME "$NODE_NAME"
   
-  VPN_PUBLIC_IP="$(curl -fsS --max-time 10 https://api.ipify.org 2>/dev/null || true)"
-  kcv_ask VPN_PUBLIC_IP "Public IP of this box" "$VPN_PUBLIC_IP"
-  allinone_env_set VPN_PUBLIC_IP "$VPN_PUBLIC_IP"
-  allinone_env_set VPN_NET "10.8.0.0"
-  allinone_env_set VPN_MASK "24"
-  
-  log "step 1/5: Setting up VPN Hub..."
-  kcv_run_module vpn setup
-  
-  log "step 2/5: Building llama.cpp & starting RPC server..."
+  log "step 1/5: Building llama.cpp & starting RPC server..."
   kcv_run_module llama build
-  allinone_env_set NODE_VPN_IP "10.8.0.1"
-  allinone_env_set MASTER_VPN_IP "10.8.0.1"
+  allinone_env_set NODE_VPN_IP "127.0.0.1"
+  allinone_env_set MASTER_VPN_IP "127.0.0.1"
   kcv_run_module llama rpc-start
   
-  log "step 3/5: Setting up llama-server..."
+  log "step 2/5: Setting up llama-server..."
   allinone_env_set MODELS_DIR "/data/models"
   kcv_ask MODEL_FILE "gguf filename inside /data/models (empty = skip for now)" ""
   allinone_env_set MODEL_FILE "$MODEL_FILE"
@@ -56,10 +47,10 @@ kcv_module_allinone() {
     warn "no model set - start later via menu 4"
   fi
   
-  log "step 4/5: Installing korvarix-llm frontend..."
+  log "step 3/5: Installing korvarix-llm frontend..."
   kcv_run_module korvarix-llm install
   
-  log "step 5/5: Finalizing frontend (NGINX/Domain)..."
+  log "step 4/5: Finalizing frontend (NGINX/Domain)..."
   kcv_ask LLM_DOMAIN "Domain for LLM panel (e.g. llm.example.com)" ""
   allinone_env_set LLM_DOMAIN "$LLM_DOMAIN"
   if [[ -n "$LLM_DOMAIN" ]]; then
@@ -67,7 +58,7 @@ kcv_module_allinone() {
   fi
   
   state_set role allinone
-  state_set vpn_expected 1
+  state_set vpn_expected 0
   
   ok "ALL-IN-ONE SETUP COMPLETE"
   ok "Your cluster is now hosted on a single machine."
