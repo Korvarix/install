@@ -422,8 +422,10 @@ bandwidth pools); prefill does not (compute-bound, serialized per layer —
 
 ## Purchase checklist (before buying a box)
 
-1. `systemd-detect-virt` → must be `kvm`/`qemu` (OpenVZ/LXC = walk away —
-   WireGuard and the plain-systemd services need a real kernel)
+  1. **OS:** Ubuntu 24.04 LTS (Highly Recommended) or any modern KVM-based Linux.
+  2. `systemd-detect-virt` → must be `kvm`/`qemu` (OpenVZ/LXC = walk away —
+     WireGuard and the plain-systemd services need a real kernel)
+
 2. Same provider + region as the rest; `ping` other boxes < 5ms
 3. 1Gbps baseline bandwidth is fine (see "Deferred upgrades" ladder — rented
    donors can add bandwidth tiers monthly and convert later; never per-box
