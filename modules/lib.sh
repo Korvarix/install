@@ -227,7 +227,7 @@ kcv_virt_check() {
   local virt
   virt="$(systemd-detect-virt 2>/dev/null || echo unknown)"
   case "$virt" in
-    kvm|qemu|none) ok "virtualization: $virt" ;;
+    kvm|qemu|none|unknown) ok "virtualization: $virt" ;;
     *) die "virtualization '$virt' unsupported (needs KVM/QEMU) - see CLUSTER.md purchase checklist" ;;
   esac
 }
