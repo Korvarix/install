@@ -61,7 +61,7 @@ llama_build() {
     if [[ -f build/CMakeCache.txt ]] && ! grep -q 'GGML_RPC:BOOL=ON' build/CMakeCache.txt; then
       rm -rf build
     fi
-    cmake -B build -DGGML_RPC=ON -DGGML_NATIVE=ON -DCMAKE_BUILD_TYPE=Release 2>&1 || exit 10
+    cmake -B build -S . -DGGML_RPC=ON -DGGML_NATIVE=ON -DCMAKE_BUILD_TYPE=Release 2>&1 || exit 10
     grep -q 'GGML_RPC:BOOL=ON' build/CMakeCache.txt 2>/dev/null || { echo "FATAL: GGML_RPC not ON in CMakeCache.txt"; exit 10; }
     # ALL, not --target: upstream keeps renaming targets; GGML_RPC=ON already
     # includes the RPC backend in the default set, so ALL always has it
