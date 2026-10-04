@@ -198,7 +198,8 @@ svc_active() { systemctl is-active --quiet "${KCV_PREFIX}-$1" 2>/dev/null; }
 
 kcv_virt_check() {
   local virt
-  virt="$(systemd-detect-virt 2>/dev/null || echo unknown)"
+  virt="$(systemd-detect-virt 2>/dev/null | tr -d '\r' | head -n 1)"
+  [[ -z "$virt" ]] && virt="unknown"
   case "$virt" in
     kvm|qemu|none|unknown) ok "virtualization: $virt" ;;
     *) die "virtualization '$virt' unsupported (needs KVM/QEMU) - see CLUSTER.md purchase checklist" ;;
